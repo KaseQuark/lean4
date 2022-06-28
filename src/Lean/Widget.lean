@@ -7,4 +7,5 @@ Authors: Wojciech Nawrocki
 import Lean.Widget.InteractiveCode
 import Lean.Widget.InteractiveDiagnostic
 import Lean.Widget.InteractiveGoal
+import Lean.Widget.ConvZoomCommands
 import Lean.Widget.TaggedText

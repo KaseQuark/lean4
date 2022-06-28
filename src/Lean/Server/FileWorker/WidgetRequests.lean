@@ -29,6 +29,18 @@ builtin_initialize
     (TaggedText MsgEmbed)
     fun ⟨⟨m⟩, i⟩ => RequestM.asTask do msgToInteractive m i (hasWidgets := true)
 
+structure ConvZoomParams where
+  expr : SubexprInfo
+  positionParams : Lsp.PlainGoalParams
+  deriving RpcEncoding
+
+builtin_initialize
+  registerBuiltinRpcProcedure
+    `Lean.Widget.getConvZoomCommands
+    ConvZoomParams
+   (Option ConvZoomCommands)
+    fun ⟨expr, posParams⟩ => (FileWorker.getConvZoomCommands expr posParams)
+
 /-- The information that the infoview uses to render a popup
 for when the user hovers over an expression.
 -/

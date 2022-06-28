@@ -16,6 +16,7 @@ import Lean.Server.References
 import Lean.Server.GoTo
 
 import Lean.Widget.InteractiveGoal
+import Lean.Widget.ConvZoomCommands
 
 namespace Lean.Server.FileWorker
 open Lsp
@@ -195,6 +196,17 @@ def handlePlainTermGoal (p : PlainTermGoalParams)
     { goal := toString goal.toInteractiveGoal.pretty
       range := goal.range
     }
+
+def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
+    : RequestM (RequestTask (Option Widget.ConvZoomCommands)) := do
+  let t ← getInteractiveGoals p
+  let goals := match t.get with
+  | Except.ok x => match x with
+    | some val => val.goals
+    | none => Array.empty
+  |Except.error e => Array.empty
+  let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx (Widget.buildConvZoomCommands expr goals[0]))
+  return t.map <| Except.map <| Option.map <| fun _ => ret
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)
     : RequestM (RequestTask (Array DocumentHighlight)) := do
