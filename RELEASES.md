@@ -1,6 +1,42 @@
 Unreleased
 ---------
 
+* Update array access notation. Now, given `a : Array α`, `a[i]` never "panics" at runtime and `i : Fin a.size`.
+  Two new notations were introduced: `a[i]!` and `a[i]?`, `i` is a natural number in both cases. For `a[i]!`,
+  a panic error message is produced at runtime if `i` is an index out of bounds. `a[i]?` has type `Option α`,
+  and `a[i]?` evaluates to `none` if the index `i` is out of bounds. See discussion on [Zulip](https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/String.2EgetOp/near/287855425),
+  and issue [#406](https://github.com/leanprover/lean4/issues/406) for additional details.
+  The notation `a[i, h]` is now syntax sugar for `a[⟨i, h⟩]`.
+
+* Update Lake to v3.2.0. See the [v3.2.0 release notes](https://github.com/leanprover/lake/releases/tag/v3.2.0) for detailed changes.
+
+* Add support for `CommandElabM` monad at `#eval`. Example:
+  ```lean
+  import Lean
+
+  open Lean Elab Command
+
+  #eval do
+    let id := mkIdent `foo
+    elabCommand (← `(def $id := 10))
+
+  #eval foo -- 10
+  ```
+
+* Try to elaborate `do` notation even if the expected type is not available. We still delay elaboration when the expected type
+  is not available. This change is particularly useful when writing examples such as
+  ```lean
+  #eval do
+    IO.println "hello"
+    IO.println "world"
+  ```
+  That is, we don't have to use the idiom `#eval show IO _ from do ...` anymore.
+  Note that auto monadic lifting is less effective when the expected type is not available.
+  Monadic polymorphic functions (e.g., `ST.Ref.get`) also require the expected type.
+
+* On Linux, panics now print a backtrace by default, which can be disabled by setting the environment variable `LEAN_BACKTRACE` to `0`.
+  Other platforms are TBD.
+
 * The `group(·)` `syntax` combinator is now introduced automatically where necessary, such as when using multiple parsers inside `(...)+`.
 
 * Add ["Typed Macros"](https://github.com/leanprover/lean4/pull/1251): syntax trees produced and accepted by syntax antiquotations now remember their syntax kinds, preventing accidental production of ill-formed syntax trees and reducing the need for explicit `:kind` antiquotation annotations. See PR for details.
@@ -88,8 +124,6 @@ Unreleased
   ```
 
 * [`let/if` indentation in `do` blocks in now supported.](https://github.com/leanprover/lean4/issues/1120)
-
-* Update Lake to v3.1.1. See the [v3.1.0 release note](https://github.com/leanprover/lake/releases/tag/v3.1.0) for detailed changes.
 
 * Add unnamed antiquotation `$_` for use in syntax quotation patterns.
 
@@ -185,7 +219,7 @@ Unreleased
     | true => isTrue (_ : n = m)
     | false => isFalse (_ : ¬n = m)
   -/
-```
+  ```
 
 * `exists` tactic is now takes a comma separated list of terms.
 

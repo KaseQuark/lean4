@@ -30,8 +30,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-      - uses: cachix/install-nix-action@v15
+      - name: Install Nix
+        uses: cachix/install-nix-action@v15
         with:
+          # https://github.com/NixOS/nix/issues/6572
+          install_url: https://releases.nixos.org/nix/nix-2.7.0/install
           extra_nix_config: |
             extra-sandbox-paths = /nix/var/cache/ccache
             substituters = file://${{ github.workspace }}/nix-store-cache-copy?priority=10&trusted=true https://cache.nixos.org
@@ -48,6 +51,11 @@ jobs:
         run: |
           # Nix seems to mutate the cache, so make a copy
           cp -r nix-store-cache nix-store-cache-copy || true
+      - name: Prepare CCache Cache
+        shell: bash -euxo pipefail {0}
+        run: |
+          sudo mkdir -m0770 -p /nix/var/cache/ccache
+          sudo chown -R $USER /nix/var/cache/ccache
       - name: Setup CCache Cache
         uses: actions/cache@v2
         with:
@@ -59,9 +67,10 @@ jobs:
       - name: Further Set Up CCache Cache
         shell: bash -euxo pipefail {0}
         run: |
-          sudo mkdir -m0770 -p /nix/var/cache/ccache
-          sudo chown -R root:nixbld /nix/var/cache/ccache
-      - uses: cachix/cachix-action@v10
+          sudo chown -R root:nixbld /nix/var/cache
+          sudo chmod -R 770 /nix/var/cache
+      - name: Install Cachix
+        uses: cachix/cachix-action@v10
         with:
           name: lean4
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
@@ -93,8 +102,8 @@ jobs:
           publish_dir: ./result
           destination_dir: ./doc
         if: matrix.name == 'Nix Linux' && github.ref == 'refs/heads/master' && github.event_name == 'push'
-      - name: CCache stats
-        run: CCACHE_DIR=/nix/var/cache/ccache nix run .#nixpkgs.ccache -- -s
       - name: Fixup CCache Cache
         run: |
           sudo chown -R $USER /nix/var/cache/ccache
+      - name: CCache stats
+        run: CCACHE_DIR=/nix/var/cache/ccache nix run .#nixpkgs.ccache -- -s

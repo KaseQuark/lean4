@@ -226,8 +226,8 @@ partial def handleDocumentHighlight (p : DocumentHighlightParams)
 
   withWaitFindSnap doc (fun s => s.endPos > pos)
     (notFoundX := pure #[]) fun snap => do
-      let (snaps, _) ← doc.cmdSnaps.updateFinishedPrefix
-      if let some his := highlightRefs? snaps.finishedPrefix.toArray then
+      let (snaps, _) ← doc.cmdSnaps.getFinishedPrefix
+      if let some his := highlightRefs? snaps.toArray then
         return his
       if let some hi := highlightReturn? none snap.stx then
         return #[hi]
@@ -237,9 +237,9 @@ open Parser.Command in
 partial def handleDocumentSymbol (_ : DocumentSymbolParams)
     : RequestM (RequestTask DocumentSymbolResult) := do
   let doc ← readDoc
-  asTask do
-    let ⟨cmdSnaps, e?⟩ ← doc.cmdSnaps.updateFinishedPrefix
-    let mut stxs := cmdSnaps.finishedPrefix.map (·.stx)
+  mapTask (← doc.cmdSnaps.waitHead?) fun _ => do
+    let ⟨cmdSnaps, e?⟩ ← doc.cmdSnaps.getFinishedPrefix
+    let mut stxs := cmdSnaps.map (·.stx)
     match e? with
     | some ElabTaskError.aborted =>
       throw RequestError.fileChanged
@@ -247,7 +247,7 @@ partial def handleDocumentSymbol (_ : DocumentSymbolParams)
       throw (e : RequestError)
     | _ => pure ()
 
-    let lastSnap := cmdSnaps.finishedPrefix.getLast!
+    let lastSnap := cmdSnaps.getLast!  -- see `waitHead?` above
     stxs := stxs ++ (← parseAhead doc.meta.mkInputContext lastSnap).toList
     let (syms, _) := toDocumentSymbols doc.meta.text stxs
     return { syms := syms.toArray }
@@ -367,9 +367,9 @@ where
           lastPos := ti.stx.getPos?.get!
   highlightKeyword stx := do
     if let Syntax.atom _ val := stx then
-      if (val.length > 0 && val[0].isAlpha) ||
+      if (val.length > 0 && val.front.isAlpha) ||
          -- Support for keywords of the form `#<alpha>...`
-         (val.length > 1 && val[0] == '#' && val[⟨1⟩].isAlpha) then
+         (val.length > 1 && val.front == '#' && (val.get ⟨1⟩).isAlpha) then
         addToken stx SemanticTokenType.keyword
   addToken stx type := do
     let ⟨beginPos, endPos, text, _⟩ ← read

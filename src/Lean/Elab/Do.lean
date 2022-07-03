@@ -90,36 +90,39 @@ structure ExtractMonadResult where
   α            : Expr
   expectedType : Expr
 
+private def mkUnknownMonadResult : MetaM ExtractMonadResult := do
+  let u ← mkFreshLevelMVar
+  let v ← mkFreshLevelMVar
+  let m ← mkFreshExprMVar (← mkArrow (mkSort (mkLevelSucc u)) (mkSort (mkLevelSucc v)))
+  let α ← mkFreshExprMVar (mkSort (mkLevelSucc u))
+  return { m, α, expectedType := mkApp m α }
+
 private partial def extractBind (expectedType? : Option Expr) : TermElabM ExtractMonadResult := do
-  match expectedType? with
-  | none => throwError "invalid 'do' notation, expected type is not available"
-  | some expectedType =>
-    let extractStep? (type : Expr) : MetaM (Option ExtractMonadResult) := do
-      match type with
-      | Expr.app m α _ =>
-        try
-          let bindInstType ← mkAppM ``Bind #[m]
-          let _  ← Meta.synthInstance bindInstType
-          return some { m := m, α := α, expectedType := expectedType }
-        catch _ =>
-          return none
-      | _ =>
-        return none
-    let rec extract? (type : Expr) : MetaM (Option ExtractMonadResult) := do
-      match (← extractStep? type) with
-      | some r => return r
-      | none =>
-        let typeNew ← whnfCore type
-        if typeNew != type then
-          extract? typeNew
-        else
-          if typeNew.getAppFn.isMVar then throwError "invalid 'do' notation, expected type is not available"
-          match (← unfoldDefinition? typeNew) with
+  let some expectedType := expectedType? | mkUnknownMonadResult
+  let extractStep? (type : Expr) : MetaM (Option ExtractMonadResult) := do
+    let .app m α _ := type | return none
+    try
+      let bindInstType ← mkAppM ``Bind #[m]
+      discard <| Meta.synthInstance bindInstType
+      return some { m, α, expectedType }
+    catch _ =>
+      return none
+  let rec extract? (type : Expr) : MetaM (Option ExtractMonadResult) := do
+    match (← extractStep? type) with
+    | some r => return r
+    | none =>
+      let typeNew ← whnfCore type
+      if typeNew != type then
+        extract? typeNew
+      else
+        if typeNew.getAppFn.isMVar then
+          mkUnknownMonadResult
+        else match (← unfoldDefinition? typeNew) with
           | some typeNew => extract? typeNew
           | none => return none
-    match (← extract? expectedType) with
-    | some r => return r
-    | none   => throwError "invalid 'do' notation, expected type is not a monad application{indentExpr expectedType}\nYou can use the `do` notation in pure code by writing `Id.run do` instead of `do`, where `Id` is the identity monad."
+  match (← extract? expectedType) with
+  | some r => return r
+  | none   => throwError "invalid 'do' notation, expected type is not a monad application{indentExpr expectedType}\nYou can use the `do` notation in pure code by writing `Id.run do` instead of `do`, where `Id` is the identity monad."
 
 namespace Do
 
@@ -714,7 +717,7 @@ private def mkTuple (elems : Array Syntax) : MacroM Syntax := do
   if elems.size == 0 then
     mkUnit
   else if elems.size == 1 then
-    return elems[0]
+    return elems[0]!
   else
     elems.extract 0 (elems.size - 1) |>.foldrM (init := elems.back) fun elem tuple =>
       ``(MProd.mk $elem $tuple)
@@ -749,7 +752,7 @@ private def destructTuple (uvars : Array Var) (x : Syntax) (body : Syntax) : Mac
   if uvars.size == 0 then
     return body
   else if uvars.size == 1 then
-    `(let $(uvars[0]):ident := $x; $body)
+    `(let $(uvars[0]!):ident := $x; $body)
   else
     destruct uvars.toList x body
 where
@@ -1170,7 +1173,7 @@ private partial def expandLiftMethodAux (inQuot : Bool) (inBinder : Bool) : Synt
     else if k == ``Lean.Parser.Term.liftMethod && !inQuot then withFreshMacroScope do
       if inBinder then
         throwErrorAt stx "cannot lift `(<- ...)` over a binder, this error usually happens when you are trying to lift a method nested in a `fun`, `let`, or `match`-alternative, and it can often be fixed by adding a missing `do`"
-      let term := args[1]
+      let term := args[1]!
       let term ← expandLiftMethodAux inQuot inBinder term
       let auxDoElem : Syntax ← `(doElem| let a ← $term:term)
       modify fun s => s ++ [auxDoElem]
@@ -1374,7 +1377,7 @@ mutual
         ```
       -/
       -- Extract second element
-      let doForDecl := doForDecls[1]
+      let doForDecl := doForDecls[1]!
       unless doForDecl[0].isNone do
         throwErrorAt doForDecl[0] "the proof annotation here has not been implemented yet"
       let y  := doForDecl[1]
@@ -1393,10 +1396,10 @@ mutual
                    do $body)
         doSeqToCode (getDoSeqElems (getDoSeq auxDo) ++ doElems)
     else withRef doFor do
-      let h?        := if doForDecls[0][0].isNone then none else some doForDecls[0][0][0]
-      let x         := doForDecls[0][1]
+      let h?        := if doForDecls[0]![0].isNone then none else some doForDecls[0]![0][0]
+      let x         := doForDecls[0]![1]
       withRef x <| checkNotShadowingMutable (← getPatternVarsEx x)
-      let xs        := doForDecls[0][3]
+      let xs        := doForDecls[0]![3]
       let forElems  := getDoSeqElems doFor[3]
       let forInBodyCodeBlock ← withFor (doSeqToCode forElems)
       let ⟨uvars, forInBody⟩ ← mkForInBody x forInBodyCodeBlock
@@ -1592,19 +1595,10 @@ def run (doStx : Syntax) (m : Syntax) : TermElabM CodeBlock :=
 
 end ToCodeBlock
 
-/- Create a synthetic metavariable `?m` and assign `m` to it.
-   We use `?m` to refer to `m` when expanding the `do` notation. -/
-private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
-  let result ← `(?m)
-  let mType ← inferType m
-  let mvar ← elabTerm result mType
-  assignExprMVar mvar.mvarId! m
-  return result
-
 @[builtinTermElab «do»] def elabDo : TermElab := fun stx expectedType? => do
   tryPostponeIfNoneOrMVar expectedType?
   let bindInfo ← extractBind expectedType?
-  let m ← mkMonadAlias bindInfo.m
+  let m ← Term.exprToSyntax bindInfo.m
   let codeBlock ← ToCodeBlock.run stx m
   let stxNew ← liftMacroM <| ToTerm.run codeBlock.code m
   trace[Elab.do] stxNew
