@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Robin Böhne
 -/
 import Lean.Widget.InteractiveGoal
+import Lean.Meta.ExprLens
 
 namespace Lean.Widget
 open Server
@@ -12,32 +13,28 @@ open Except in
 /-- Get the raw subexpression withotu performing any instantiation. -/
 private def viewCoordRaw: Nat → Expr → Except String Expr
   | 3, e                        => error s!"Can't viewRaw the type of {e}"
-  | 0, e@(Expr.app f a _)       => ok f
-  | 1, e@(Expr.app f a _)       => ok a
-  | 0, e@(Expr.lam n y b _)     => ok y
-  | 1, e@(Expr.lam n y b c)     => ok b
-  | 0, e@(Expr.forallE n y b _) => ok y
-  | 1, e@(Expr.forallE n y b c) => ok b
-  | 0, e@(Expr.letE n y a b c)  => ok y
-  | 1, e@(Expr.letE n y a b c)  => ok a
-  | 2, e@(Expr.letE n y a b c)  => ok b
-  | 0, e@(Expr.proj _ _ b _)    => ok b
-  | n, e@(Expr.mdata _ a _)     => viewCoordRaw n a
+  | 0, (Expr.app f _ _)       => ok f
+  | 1, (Expr.app _ a _)       => ok a
+  | 0, (Expr.lam _ y _ _)     => ok y
+  | 1, (Expr.lam _ _ b _)     => ok b
+  | 0, (Expr.forallE _ y _ _) => ok y
+  | 1, (Expr.forallE _ _ b _) => ok b
+  | 0, (Expr.letE _ y _ _ _)  => ok y
+  | 1, (Expr.letE _ _ a _ _)  => ok a
+  | 2, (Expr.letE _ _ _ b _)  => ok b
+  | 0, (Expr.proj _ _ b _)    => ok b
+  | n, (Expr.mdata _ a _)     => viewCoordRaw n a
   | c, e                        => error s!"Bad coordinate {c} for {e}"
-
-/-- Decodes a subexpression `Pos` as a sequence of coordinates. See `Pos.encode` for details.-/
-private def decode (p : Nat) : Array Nat :=
-  Lean.SubExpr.Pos.foldl Array.push #[] p
 
 structure ConvZoomCommands where
   commands? : Option String
-  deriving RpcEncoding
+  deriving ToJson, FromJson
 
 /-- Get the top level expression from a `CodeWithInfos`. -/
 private partial def getExprFromCodeWithInfos (expression : CodeWithInfos) : List Expr := Id.run do
   let mut list := []
   match expression with
-  | TaggedText.text t => return list
+  | TaggedText.text _ => return list
   | TaggedText.append x =>
     for ex in x do
       let list2 := getExprFromCodeWithInfos ex
@@ -52,97 +49,82 @@ private structure SolveReturn where
   expr : Expr
   val? : Option String
   listRest : List Nat
-  test : String
-  deriving Inhabited
 
 private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM (SolveReturn) := match expr with
-| e@(Expr.app _ _ _) => do
-  let mut descExp := e
-  let mut count := 0
-  let mut explicitList := []
-  let mut exprList := []
+  | (Expr.app _ _ _) => do
+    let mut descExp := expr
+    let mut count := 0
+    let mut explicitList := []
 
-  while descExp.isApp do
-    if (←Lean.Meta.inferType descExp.appFn!).bindingInfo!.isExplicit then
-      explicitList := true::explicitList
-      count := count + 1
-    else
-      explicitList := false::explicitList
-    exprList := descExp::exprList
-    descExp := descExp.appFn!
+    while descExp.isApp do
+      if (←Lean.Meta.inferType descExp.appFn!).bindingInfo!.isExplicit then
+        explicitList := true::explicitList
+        count := count + 1
+      else
+        explicitList := false::explicitList
+      descExp := descExp.appFn!
 
-  let mut list := listParam
-  let mut length := count
-  explicitList := List.reverse explicitList
-  while !list.isEmpty && list.head! == 0 do
-    if explicitList.head! == true then
-      count := count - 1
-    explicitList := explicitList.tail!
-    list := list.tail!
+    let mut list := listParam
+    let mut length := count
+    explicitList := List.reverse explicitList
+    while !list.isEmpty && list.head! == 0 do
+      if explicitList.head! == true then
+        count := count - 1
+      explicitList := explicitList.tail!
+      list := list.tail!
 
-  let mut nextExp := e
-  while length > count do
-    nextExp := nextExp.appFn!
-    length := length - 1
-  nextExp := nextExp.appArg!
+    let mut nextExp := expr
+    while length > count do
+      nextExp := nextExp.appFn!
+      length := length - 1
+    nextExp := nextExp.appArg!
 
-  let listRest := if list.isEmpty then [] else list.tail!
+    let listRest := if list.isEmpty then [] else list.tail!
 
-  let mut testval := "exp: " ++ Expr.dbgToString expr ++"\nnextExp: " ++ Expr.dbgToString nextExp ++ "\nlistParam: " ++ listParam.toString ++
-    "\ncount: " ++ toString count ++ "\nlistRest: " ++ listRest.toString ++ "\nlength: " ++ toString length ++ "\nexplicitList: " ++ explicitList.toString ++"\n"
+    return { expr := nextExp, val? := toString count , listRest := listRest }
 
-  for expr in exprList do
-    testval := testval ++ "exprFromList: " ++ Expr.dbgToString expr ++ "\n"
+  | (Expr.lam n _ b _) => do
+    let name := match n with
+      | Name.anonymous => "anonymus"
+      | Name.str _ s _ => s
+      | Name.num _ _ _ => toString (listParam.head! + 1)
+    return { expr := b, val? := name, listRest := listParam.tail! }
 
-  return { expr := nextExp, val? := toString count , listRest := listRest, test := testval }
+  | (Expr.forallE n _ b _) => do
+    let name := match n with
+      | Name.anonymous => "anonymus"
+      | Name.str _ s _ => s
+      | Name.num _ _ _ => toString (listParam.head! + 1)
+    return { expr := b, val? := name, listRest := listParam.tail! }
 
-| e@(Expr.lam n _ b _) => do
-  let name := match n with
-    | Name.anonymous => "anonymus"
-    | Name.str _ s _ => s
-    | Name.num _ s _ => toString (listParam.head! + 1)
-  return { expr := b, val? := name, listRest := listParam.tail! , test := "lam\n" }
+  | (Expr.mdata _ b _) => do
+    return {expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
 
-| e@(Expr.forallE n _ b _) => do
-  let name := match n with
-    | Name.anonymous => "anonymus"
-    | Name.str _ s _ => s
-    | Name.num _ s _ => toString (listParam.head! + 1)
-  return { expr := b, val? := name, listRest := listParam.tail! , test := "forallE\n" }
-
-| e@(Expr.mdata _ b _) => do
-  return {expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail!, test := "mdata\n"}
-
-| e =>
-  let retexpr := match (viewCoordRaw listParam.head! expr) with
-    | Except.error e => expr
-    | Except.ok e => e
-  return { expr := retexpr, val? := toString ((listParam.head!) + 1), listRest := listParam.tail! , test := "generic\n" }
+  | _ =>
+    let retexpr := match (viewCoordRaw listParam.head! expr) with
+      | Except.error _ => expr
+      | Except.ok e => e
+    return { expr := retexpr, val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
 
 def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) : MetaM (ConvZoomCommands) := do
-let mut ret := "/-\n"
-let mut list := (decode subexprParam.subexprPos).toList
-let mut expr := (getExprFromCodeWithInfos goalParam.type).head!
-let mut retList := []
-while !list.isEmpty do
+  let mut ret := "/-\n"
+  let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
+  let mut expr := (getExprFromCodeWithInfos goalParam.type).head!
+  let mut retList := []
+  while !list.isEmpty do
 
-  ret := ret ++ "expr: " ++ Expr.dbgToString expr ++"\n"
+    let res ← solveLevel expr list
+    expr := res.expr
+    retList := match res.val? with
+      | none => retList
+      | some val => val::retList
+    list := res.listRest
 
-  let res ← solveLevel expr list
-  expr := res.expr
-  retList := match res.val? with
-    | none => retList
-    | some val => val::retList
-  list := res.listRest
+  retList := List.reverse retList
+  ret := "enter " ++ toString retList
+  if ret.contains '0' then ret := "Error: Not a valid conv target"
+  if retList.isEmpty then ret := ""
 
-  ret := ret ++ "listRest " ++ toString list ++"\n" ++ "\n" ++ res.test ++ "\n\n"
-
-retList := List.reverse retList
-ret := ret ++ "-/\n"
-ret := "enter " ++ toString retList
-if ret.contains '0' then ret := "Error: Not a valid conv target"
-if retList.isEmpty then ret := ""
-
-return { commands? := ret }
+  return { commands? := ret }
 
 end Lean.Widget
