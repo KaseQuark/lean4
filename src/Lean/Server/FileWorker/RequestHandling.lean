@@ -204,7 +204,7 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
   | Except.ok x => match x with
     | some val => val.goals
     | none => Array.empty
-  |Except.error e => Array.empty
+  | Except.error e => panic! e.message
   let doc ← readDoc
   let text := doc.meta.text
   let hoverPos := text.lspPosToUtf8Pos p.position
@@ -213,8 +213,6 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
       let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx
         (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos))
       return some ret
-  --let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx (Widget.buildConvZoomCommands expr goals.toList.head!))
-  --return t.map <| Except.map <| Option.map <| fun _ => ret
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)
     : RequestM (RequestTask (Array DocumentHighlight)) := do

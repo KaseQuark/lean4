@@ -5,6 +5,7 @@ Authors: Robin Böhne
 -/
 import Lean.Widget.InteractiveGoal
 import Lean.Meta.ExprLens
+import Lean.Server.InfoUtils
 
 namespace Lean.Widget
 open Server
@@ -50,12 +51,14 @@ private structure SolveReturn where
   val? : Option String
   listRest : List Nat
 
-private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM (SolveReturn) := match expr with
+private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn := match expr with
   | Expr.app _ _ _ => do
     let mut descExp := expr
     let mut count := 0
     let mut explicitList := []
 
+    -- we go through the application until we reach the end, counting how many explicit arguments it has and noting whether
+    -- they are explicit or implicit
     while descExp.isApp do
       if (←Lean.Meta.inferType descExp.appFn!).bindingInfo!.isExplicit then
         explicitList := true::explicitList
@@ -64,6 +67,7 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM (SolveReturn
         explicitList := false::explicitList
       descExp := descExp.appFn!
 
+    -- we get the correct `enter` command
     let mut list := listParam
     let mut length := count
     explicitList := List.reverse explicitList
@@ -108,102 +112,162 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM (SolveReturn
       | Except.ok e => e
     return { expr := retexpr, val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
 
-partial def infoToString: SourceInfo → String
-  | SourceInfo.original s _ s2 _    => s2.toString
-  | SourceInfo.synthetic _ _  => ""
-  | _ => ""
-
-partial def stxToString (stx : Syntax) : String := match stx with
-  | Syntax.missing => "missing"
-  | Syntax.node info kind args => Id.run do
-    let mut ret := ""
-    for s in args do
-      let str := stxToString s
-      ret := ret ++ str ++ " "
-    if ret != "" && ret != " " && ret != "\n" then ret := ret ++ "\n"
-    return ret
-  | Syntax.atom _ s => s
-  | Syntax.ident _ _ s _=> s.toString
-
-structure Range where
-  start : String.Pos
-  stop : String.Pos
-
-def getRange? (stx : Syntax) (originalOnly := false) : Option Range :=
-  match stx.getPos? originalOnly, stx.getTailPos? originalOnly with
-  | some start, some stop => some { start, stop }
-  | _,          _         => none
-
 structure LocateReturn where
-  path : List Nat
-  traverser : Syntax.Traverser
-  range : Range
-  rangeList : List Range
-def mkRange : Range := { start := 0, stop := 0 }
+  pathBeforeConv : List Nat
+  pathAfterConv : List Nat
+deriving Inhabited
 
-def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn := Id.run do
+private partial def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn := Id.run do
   let mut t := tParam
   let mut path := []
-  let mut finrange := mkRange
+  let mut rangeList := []
+
+  -- first, we roughly locate `pos` in the syntax
   while !t.cur.getArgs.isEmpty do
     let mut args := t.cur.getArgs
     let mut i := 0
     let mut newT := t
     let mut found := false
-    let mut rangeList := []
+    rangeList := []
     for arg in args do
-      let mut range := match getRange? arg with
+      let mut range := match arg.getRange? with
         | some x => x
         | none => { start := 0, stop := 0 }
       rangeList := range::rangeList
       if range.start < pos && pos <= range.stop then do
         newT := t.down i
         path := i::path
-        finrange := range
         found := true
       i := i + 1
-    if !found then return { path := path.reverse , traverser := t, range := finrange, rangeList := rangeList }
+    if !found then break
     t := newT
-  return { path := path.reverse , traverser := t, range := finrange, rangeList := []}
 
-structure InsertReturn where
-  stx : Syntax
-  list : List Syntax
-deriving Inhabited
+  -- go back up from found location to the first `conv` we find
+  t := t.up
+  let mut pathAfterConv := []
+  let mut firstArg := match Syntax.reprint t.cur.getArgs[0]! with
+    | some x => x
+    | none =>  panic! "how did this happen?"
+  pathAfterConv := path.head!::pathAfterConv
+  path := path.tail!
+  while !("conv".isPrefixOf firstArg) do
+    t := t.up
+    firstArg := match Syntax.reprint t.cur.getArgs[0]! with
+      | some x => x
+      | none =>  panic! "how did this happen?"
+    pathAfterConv := path.head!::pathAfterConv
+    path := path.tail!
 
-partial def syntaxInsert (stxParam : Syntax) (val : String) (path : List Nat) : InsertReturn := Id.run do
-  let mut stx := stxParam
-  let pos := path.head!
-  if path.tail!.isEmpty then
-    match stx with
-      | Syntax.missing => panic! "error: missing"
-      | Syntax.atom _ _ => panic! "error: atom"
-      | Syntax.ident _ _ _ _=> panic! "error: ident"
-      | Syntax.node info kind args =>
-        let newval := Syntax.atom SourceInfo.none val
-        --let lineBreak := Syntax.atom SourceInfo.none ""
-        let newArgList := List.append (args.toList.take (pos + 1)) (newval::(args.toList.drop (pos + 1)))
-        return { stx := Syntax.node info kind newArgList.toArray, list := newArgList }
+  -- the cursor is in front of the first tactic, we need to do some extra work
+  if t.cur.getArgs[0]!.getKind.toString == "Lean.Parser.Tactic.Conv.conv" then
+    t := t.down 0
+    path := 0::path
+    pathAfterConv := [3]
+
+  -- the cursor is in front of another tactic, we need to do some extra work
+  else if pathAfterConv.length == 3 then
+    let mut rangeList' := rangeList.reverse
+    let mut ctr := 0
+    while rangeList'.head!.stop < pos do
+      ctr := ctr + 1
+      rangeList' := rangeList'.tail!
+    pathAfterConv := List.append pathAfterConv ((ctr-1)::0::0::[])
+
+  return {pathBeforeConv := path.reverse, pathAfterConv := pathAfterConv }
+
+private partial def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : Syntax := Id.run do
+  let mut t := Syntax.Traverser.fromSyntax stx
+  let mut pathBeforeConv := pathBeforeConvParam
+  while pathBeforeConv.length > 0 do
+    t := t.down pathBeforeConv.head!
+    pathBeforeConv := pathBeforeConv.tail!
+  let mut pathAfterConv := pathAfterConvParam
+
+  -- we are right after conv, we need to do something different here
+  if pathAfterConv.length == 1 then
+    --move up to find previous whitespace
+    let mut pathBeforeConv' := pathBeforeConvParam.reverse
+    let mut returnPath := []
+    for _ in [:4] do
+      t := t.up
+      returnPath := pathBeforeConv'.head!::returnPath
+      pathBeforeConv' := pathBeforeConv'.tail!
+    t := t.up
+
+    --get whitespace and make new node
+    let argNr := pathBeforeConv'.head! - 1
+    let prevArg := match Syntax.reprint t.cur.getArgs[argNr]! with
+      | some x => x
+      | none =>  panic! "Syntax could not be reprinted"
+    let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
+    --whitespace is extended by two spaces to get correct indentation level
+    let mut whitespace := "  "
+    while "  ".isPrefixOf whitespaceLine do
+      whitespace := whitespace ++ "  "
+      whitespaceLine := whitespaceLine.drop 2
+    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (value ++ "\n" ++ whitespace)
+
+    -- move back down to `conv`
+    t := t.down pathBeforeConv'.head!
+    while returnPath.length > 0 do
+      t := t.down returnPath.head!
+      returnPath := returnPath.tail!
+
+    -- move down to args of `conv`
+    t := t.down (pathAfterConv.head! + 1)
+    t := t.down 0
+    t := t.down 0
+
+    -- add new node to Syntax and move to the very top
+    let newArgList := newNode::t.cur.getArgs.toList
+    t := t.setCur (t.cur.setArgs newArgList.toArray)
+    while t.parents.size > 0 do
+      t := t.up
+
+    return t.cur
+
+  -- we are anywhere else in the `conv` block
   else
-    match stx with
-      | Syntax.missing => panic! "error: missing"
-      | Syntax.atom _ _ => panic! "error: atom"
-      | Syntax.ident _ _ _ _=> panic! "error: ident"
-      | Syntax.node info kind args =>
-        let nextStx := args[pos]!
-        let newStx := syntaxInsert nextStx val path.tail!
-        let newArgs := args.set! pos newStx.stx
-        return { stx := Syntax.node info kind newArgs, list := newStx.list }
+     -- move down to args of `conv`
+    for _ in [:3] do
+      t := t.down pathAfterConv.head!
+      pathAfterConv := pathAfterConv.tail!
 
+    --get whitespace from previous tactic and make new node
+    let argNr := match pathAfterConv.head! with
+      | 0 => 0
+      | x => x - 1
+    let prevArg := match Syntax.reprint t.cur.getArgs[argNr]! with
+      | some x => x
+      | none =>  panic! "Syntax could not be reprinted"
+    let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
+    let mut whitespace := ""
+    while "  ".isPrefixOf whitespaceLine do
+      whitespace := whitespace ++ "  "
+      whitespaceLine := whitespaceLine.drop 2
+    -- if we are inserting after the last element of the conv block, we need to add an additional level of indentation in front of our tactic,
+    -- and remove one level at the end.
+    let mut additionalWhitespace := ""
+    if (pathAfterConv.head! + 1) == t.cur.getArgs.size then
+      additionalWhitespace := "  "
+      whitespace := whitespace.drop 2
+    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (additionalWhitespace ++ value ++ "\n" ++ whitespace)
+    -- add new node to syntax and move to the very top
+    let argList := t.cur.getArgs.toList
+    let newArgList := List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
+    t := t.setCur (t.cur.setArgs newArgList.toArray)
+    while t.parents.size > 0 do
+      t := t.up
 
+    return t.cur
 
-def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p: String.Pos) : MetaM (ConvZoomCommands) := do
+def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p: String.Pos) : MetaM ConvZoomCommands := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
   let mut expr := (getExprFromCodeWithInfos goalParam.type).head!
   let mut ret := ""
   let mut retList := []
+  -- generate list of commands for `enter`
   while !list.isEmpty do
-
     let res ← solveLevel expr list
     expr := res.expr
     retList := match res.val? with
@@ -211,67 +275,22 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
       | some val => val::retList
     list := res.listRest
 
+  -- build `enter [...]` string
   retList := List.reverse retList
   let mut enterval := "enter " ++ toString retList
   if enterval.contains '0' then enterval := "Error: Not a valid conv target"
   if retList.isEmpty then enterval := ""
 
-  --ret := Format.pretty (←Lean.PrettyPrinter.ppCommand stx)
-  --ret := "/-\n" ++ fileMap.source ++ "\n-/"
-
-  let range := match getRange? stx with
-  | some x => x
-  | none => { start := 0, stop := 0}
-
-  --ret := "start: " ++ toString range.start ++ "stop: " ++ toString range.stop ++ "p: " ++ toString p ++ "\n"
+  -- insert `enter [...]` string into syntax
   let traverser := Syntax.Traverser.fromSyntax stx
   let retval := (locate traverser p)
-  --ret := ret ++ "path : " ++ retval.path.toString ++ "\n"
-  --ret := ret ++ "/-\n" ++ stxToString stx ++ "\n-/"
-  let inserted := syntaxInsert stx enterval retval.path
-  --ret := ret ++ "\n--------------------------------------------\n"
- -- ret := ret ++ "/-\n" ++ stxToString inserted ++ "\n-/"
-  --ret := ret ++ "/-\n" ++ Format.pretty (←Lean.PrettyPrinter.ppCommand inserted.stx) ++ "\n-/"
-  let val := match Syntax.reprint inserted.stx with
+  let inserted := syntaxInsert stx retval.pathBeforeConv retval.pathAfterConv enterval
+  let val := match Syntax.reprint inserted with
     | some x => x
-    | none => "nichts"
-  --ret := ret ++ "/-\n" ++ val ++ "\n-/"
-  --ret := ret ++ "/-\n" ++ stxToString retval.traverser.cur ++ "\n-/"
-  --ret := ret ++ "/-\n" ++ "start: " ++ toString retval.range.start ++ "stop: " ++ toString retval.range.stop ++ "p: " ++ toString p ++ "\n"
-  --for range in retval.rangeList do
-    --ret := ret ++ "\n" ++ "start: " ++ toString range.start ++ "stop: " ++ toString range.stop
-  ret := "--Result after inserting enter:\n"
-  --ret := ret ++ "/-\n" ++ Format.pretty (←Lean.PrettyPrinter.ppCommand inserted.stx) ++ "\n-/"
-  ret := ret ++ "/-\n" ++ val ++ "\n-/"
-  for stx in inserted.list do
-    ret := ret ++ "\n--------------------------------------------\n"
-    ret := ret ++ stxToString stx
-  ret := ret ++ "\n--------------------------------------------\n"
-  /-let last := inserted.list.reverse.head!
-  match last with
-    | Syntax.missing => panic! "error: missing"
-    | Syntax.atom _ _ => panic! "error: atom"
-    | Syntax.ident _ _ _ _=> panic! "error: ident"
-    | Syntax.node info kind args =>
-      ret := ret ++ "\n" ++ toString kind-/
+    | none => "Syntax could not be reprinted"
 
-  /-let convtest := retval.testargs.toList.head!
-  ret := ret ++ "\n" ++ "convtest: " ++ Format.pretty (←Lean.PrettyPrinter.ppCommand convtest)
-  let convtestargs := convtest.getArgs.toList.head!.getArgs
-  for arg in convtestargs do
-    ret := ret ++ "\n" ++ "testargs: " ++ stxToString arg
-  ret := ret ++ "\n" ++ toString convtest.getArgs.size
-  let testval := match convtest with
-    | Syntax.missing => Array.empty
-    | Syntax.node _ _ args => args
-    | Syntax.atom _ _ => Array.empty
-    | Syntax.ident _ _ _ _=> Array.empty
-  let testval2 := match convtest with
-    | Syntax.missing => "1"
-    | Syntax.node _ _ _ => "2"
-    | Syntax.atom _ _ => "3"
-    | Syntax.ident _ _ _ _=> "4"
-  ret := ret ++ "testval2 :" ++ toString testval2-/
+  ret := ret ++ "--Result after inserting enter:\n"
+  ret := ret ++ "/-\n" ++ val ++ "\n-/"
   return { commands? := ret }
 
 end Lean.Widget
