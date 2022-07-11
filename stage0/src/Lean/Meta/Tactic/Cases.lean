@@ -163,27 +163,25 @@ We say the major premise has independent indices IF
 -/
 private def hasIndepIndices (ctx : Context) : MetaM Bool := do
   if ctx.majorTypeIndices.isEmpty then
-    pure true
+    return true
   else if ctx.majorTypeIndices.any fun idx => !idx.isFVar then
     /- One of the indices is not a free variable. -/
-    pure false
+    return false
   else if ctx.majorTypeIndices.size.any fun i => i.any fun j => ctx.majorTypeIndices[i]! == ctx.majorTypeIndices[j]! then
     /- An index ocurrs more than once -/
-    pure false
+    return false
   else
-    let lctx ← getLCtx
-    let mctx ← getMCtx
-    return lctx.all fun decl =>
-      decl.fvarId == ctx.majorDecl.fvarId || -- decl is the major
-      ctx.majorTypeIndices.any (fun index => decl.fvarId == index.fvarId!) || -- decl is one of the indices
-      mctx.findLocalDeclDependsOn decl (fun fvarId => ctx.majorTypeIndices.all fun idx => idx.fvarId! != fvarId) -- or does not depend on any index
+    (← getLCtx).allM fun decl =>
+      pure (decl.fvarId == ctx.majorDecl.fvarId) <||> -- decl is the major
+      pure (ctx.majorTypeIndices.any (fun index => decl.fvarId == index.fvarId!)) <||> -- decl is one of the indices
+     findLocalDeclDependsOn decl (fun fvarId => ctx.majorTypeIndices.all fun idx => idx.fvarId! != fvarId) -- or does not depend on any index
 
 private def elimAuxIndices (s₁ : GeneralizeIndicesSubgoal) (s₂ : Array CasesSubgoal) : MetaM (Array CasesSubgoal) :=
   let indicesFVarIds := s₁.indicesFVarIds
   s₂.mapM fun s => do
     indicesFVarIds.foldlM (init := s) fun s indexFVarId =>
       match s.subst.get indexFVarId with
-      | Expr.fvar indexFVarId' _ =>
+      | Expr.fvar indexFVarId' =>
         (do let mvarId ← clear s.mvarId indexFVarId'; pure { s with mvarId := mvarId, subst := s.subst.erase indexFVarId })
         <|>
         (pure s)

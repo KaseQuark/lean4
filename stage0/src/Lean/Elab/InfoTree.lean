@@ -225,7 +225,7 @@ def ContextInfo.toPPContext (info : ContextInfo) (lctx : LocalContext) : PPConte
     opts := info.options, currNamespace := info.currNamespace, openDecls := info.openDecls }
 
 def ContextInfo.ppSyntax (info : ContextInfo) (lctx : LocalContext) (stx : Syntax) : IO Format := do
-  ppTerm (info.toPPContext lctx) stx
+  ppTerm (info.toPPContext lctx) ⟨stx⟩  -- HACK: might not be a term
 
 private def formatStxRange (ctx : ContextInfo) (stx : Syntax) : Format :=
   let pos    := stx.getPos?.getD 0
@@ -449,7 +449,8 @@ def withMacroExpansionInfo [MonadFinally m] [Monad m] [MonadInfoTree m] [MonadLC
   if (← getInfoState).enabled then
     let treesSaved ← getResetInfoTrees
     Prod.fst <$> MonadFinally.tryFinally' x fun _ => modifyInfoState fun s =>
-      if s.trees.size > 0 then
+      if h : s.trees.size > 0 then
+        have : s.trees.size - 1 < s.trees.size := Nat.sub_lt h (by decide)
         { s with trees := treesSaved, assignment := s.assignment.insert mvarId s.trees[s.trees.size - 1] }
       else
         { s with trees := treesSaved }

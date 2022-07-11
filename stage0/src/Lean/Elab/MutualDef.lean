@@ -85,8 +85,8 @@ private def isMultiConstant? (views : Array DefView) : Option (List Name) :=
   if views.size == 1 &&
      views[0]!.kind == DefKind.opaque &&
      views[0]!.binders.getArgs.size > 0 &&
-     views[0]!.binders.getArgs.all (·.getKind == ``Parser.Term.simpleBinder) then
-    some <| (views[0]!.binders.getArgs.toList.map (fun stx => stx[0].getArgs.toList.map (·.getId))).join
+     views[0]!.binders.getArgs.all (·.isIdent) then
+    some (views[0]!.binders.getArgs.toList.map (·.getId))
   else
     none
 
@@ -156,7 +156,7 @@ private partial def withFunLocalDecls {α} (headers : Array DefViewElabHeader) (
       if header.modifiers.isNonrec then
         loop (i+1) fvars
       else
-        withLocalDecl header.shortDeclName BinderInfo.auxDecl header.type fun fvar => loop (i+1) (fvars.push fvar)
+        withAuxDecl header.shortDeclName header.type header.declName fun fvar => loop (i+1) (fvars.push fvar)
     else
       k fvars
   loop 0 #[]
@@ -248,10 +248,10 @@ private def instantiateMVarsAtLetRecToLift (toLift : LetRecToLift) : TermElabM L
 
 private def typeHasRecFun (type : Expr) (funFVars : Array Expr) (letRecsToLift : List LetRecToLift) : Option FVarId :=
   let occ? := type.find? fun e => match e with
-    | Expr.fvar fvarId _ => funFVars.contains e || letRecsToLift.any fun toLift => toLift.fvarId == fvarId
+    | Expr.fvar fvarId => funFVars.contains e || letRecsToLift.any fun toLift => toLift.fvarId == fvarId
     | _ => false
   match occ? with
-  | some (Expr.fvar fvarId _) => some fvarId
+  | some (Expr.fvar fvarId) => some fvarId
   | _ => none
 
 private def getFunName (fvarId : FVarId) (letRecsToLift : List LetRecToLift) : TermElabM Name := do
@@ -326,8 +326,8 @@ we would have a `LetRecToLift` containing:
 Note that `g` is not a free variable at `(let g : B := ?m₂; body)`. We recover the fact that
 `f` depends on `g` because it contains `m₂`
 -/
-private def mkInitialUsedFVarsMap (mctx : MetavarContext) (sectionVars : Array Expr) (mainFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift)
-    : UsedFVarsMap := Id.run do
+private def mkInitialUsedFVarsMap [Monad m] [MonadMCtx m] (sectionVars : Array Expr) (mainFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift)
+    : m UsedFVarsMap := do
   let mut sectionVarSet := {}
   for var in sectionVars do
     sectionVarSet := sectionVarSet.insert var.fvarId!
@@ -342,11 +342,11 @@ private def mkInitialUsedFVarsMap (mctx : MetavarContext) (sectionVars : Array E
        for the associated let-rec because we need this information to compute the fixpoint later. -/
     let mvarIds := (toLift.val.collectMVars {}).result
     for mvarId in mvarIds do
-      match letRecsToLift.findSome? fun (toLift : LetRecToLift) => if toLift.mvarId == mctx.getDelayedRoot mvarId then some toLift.fvarId else none with
+      match (← letRecsToLift.findSomeM? fun (toLift : LetRecToLift) => return if toLift.mvarId == (← getDelayedMVarRoot mvarId) then some toLift.fvarId else none) with
       | some fvarId => set := set.insert fvarId
       | none        => pure ()
     usedFVarMap := usedFVarMap.insert toLift.fvarId set
-  pure usedFVarMap
+  return usedFVarMap
 
 /-
 The let-recs may invoke each other. Example:
@@ -423,10 +423,10 @@ end FixPoint
 
 abbrev FreeVarMap := FVarIdMap (Array FVarId)
 
-private def mkFreeVarMap
-    (mctx : MetavarContext) (sectionVars : Array Expr) (mainFVarIds : Array FVarId)
-    (recFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift) : FreeVarMap := Id.run do
-  let usedFVarsMap  := mkInitialUsedFVarsMap mctx sectionVars mainFVarIds letRecsToLift
+private def mkFreeVarMap [Monad m] [MonadMCtx m]
+    (sectionVars : Array Expr) (mainFVarIds : Array FVarId)
+    (recFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift) : m FreeVarMap := do
+  let usedFVarsMap  ← mkInitialUsedFVarsMap sectionVars mainFVarIds letRecsToLift
   let letRecFVarIds := letRecsToLift.map fun toLift => toLift.fvarId
   let usedFVarsMap  := FixPoint.run letRecFVarIds usedFVarsMap
   let mut freeVarMap := {}
@@ -536,7 +536,7 @@ private def mkLetRecClosureFor (toLift : LetRecToLift) (freeVars : Array FVarId)
 private def mkLetRecClosures (sectionVars : Array Expr) (mainFVarIds : Array FVarId) (recFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift) : TermElabM (List LetRecClosure) := do
   -- Compute the set of free variables (excluding `recFVarIds`) for each let-rec.
   let mut letRecsToLift := letRecsToLift
-  let mut freeVarMap    := mkFreeVarMap (← getMCtx) sectionVars mainFVarIds recFVarIds letRecsToLift
+  let mut freeVarMap    ← mkFreeVarMap sectionVars mainFVarIds recFVarIds letRecsToLift
   let mut result := #[]
   for i in [:letRecsToLift.size] do
     if letRecsToLift[i]!.val.hasExprMVar then
@@ -546,7 +546,7 @@ private def mkLetRecClosures (sectionVars : Array Expr) (mainFVarIds : Array FVa
       let valNew ← instantiateMVars letRecsToLift[i]!.val
       letRecsToLift := letRecsToLift.modify i fun t => { t with val := valNew }
       -- We have to recompute the `freeVarMap` in this case. This overhead should not be an issue in practice.
-      freeVarMap := mkFreeVarMap (← getMCtx) sectionVars mainFVarIds recFVarIds letRecsToLift
+      freeVarMap ← mkFreeVarMap sectionVars mainFVarIds recFVarIds letRecsToLift
     let toLift := letRecsToLift[i]!
     result := result.push (← mkLetRecClosureFor toLift (freeVarMap.find? toLift.fvarId).get!)
   return result.toList
@@ -565,7 +565,7 @@ def insertReplacementForLetRecs (r : Replacement) (letRecClosures : List LetRecC
 
 def Replacement.apply (r : Replacement) (e : Expr) : Expr :=
   e.replace fun e => match e with
-    | Expr.fvar fvarId _ => match r.find? fvarId with
+    | Expr.fvar fvarId => match r.find? fvarId with
       | some c => some c
       | _      => none
     | _ => none
@@ -740,9 +740,9 @@ partial def checkForHiddenUnivLevels (allUserLevelNames : List Name) (preDefs : 
       -- Otherwise, we try to produce an error message containing the expression with the offending universe
       let rec visitLevel (u : Level) : ReaderT Expr TermElabM Unit := do
         match u with
-        | .succ u _ => visitLevel u
-        | .imax u v _ | .max u v _ => visitLevel u; visitLevel v
-        | .param n _ =>
+        | .succ u => visitLevel u
+        | .imax u v | .max u v => visitLevel u; visitLevel v
+        | .param n =>
           unless sTypes.visitedLevel.contains u || allUserLevelNames.contains n do
             let parent ← withOptions (fun o => pp.universes.set o true) do addMessageContext m!"{indentExpr (← read)}"
             let body ← withOptions (fun o => pp.letVarTypes.setIfNotSet (pp.funBinderTypes.setIfNotSet o true) true) do addMessageContext m!"{indentExpr preDef.value}"
@@ -751,13 +751,13 @@ partial def checkForHiddenUnivLevels (allUserLevelNames : List Name) (preDefs : 
       let rec visit (e : Expr) : ReaderT Expr (MonadCacheT ExprStructEq Unit TermElabM) Unit := do
         checkCache { val := e : ExprStructEq } fun _ => do
           match e with
-          | .forallE n d b c | .lam n d b c => visit d e; withLocalDecl n c.binderInfo d fun x => visit (b.instantiate1 x) e
+          | .forallE n d b c | .lam n d b c => visit d e; withLocalDecl n c d fun x => visit (b.instantiate1 x) e
           | .letE n t v b _  => visit t e; visit v e; withLetDecl n t v fun x => visit (b.instantiate1 x) e
           | .app ..        => e.withApp fun f args => do visit f e; args.forM fun arg => visit arg e
-          | .mdata _ b _   => visit b e
-          | .proj _ _ b _  => visit b e
-          | .sort u _      => visitLevel u (← read)
-          | .const _ us _  => us.forM (visitLevel · (← read))
+          | .mdata _ b     => visit b e
+          | .proj _ _ b    => visit b e
+          | .sort u        => visitLevel u (← read)
+          | .const _ us    => us.forM (visitLevel · (← read))
           | _              => pure ()
       visit preDef.value preDef.value |>.run {}
     for preDef in preDefs do
@@ -796,6 +796,8 @@ where
             return preDef
           else
             return { preDef with value := (← eraseAuxDiscr preDef.value) }
+        for preDef in preDefs do
+          trace[Elab.definition] "after eraseAuxDiscr, {preDef.declName} : {preDef.type} :=\n{preDef.value}"
         checkForHiddenUnivLevels allUserLevelNames preDefs
         addPreDefinitions preDefs hints
         processDeriving headers

@@ -49,7 +49,7 @@ private def letDeclArgHasBinders (letDeclArg : Syntax) : Bool :=
   else if k == ``Lean.Parser.Term.letEqnsDecl then
     true
   else if k == ``Lean.Parser.Term.letIdDecl then
-    -- letIdLhs := ident >> checkWsBefore "expected space before binders" >> many (ppSpace >> (simpleBinderWithoutType <|> bracketedBinder)) >> optType
+    -- letIdLhs := ident >> checkWsBefore "expected space before binders" >> many (ppSpace >> letIdBinder)) >> optType
     let binders := letDeclArg[1]
     binders.getNumArgs > 0
   else
@@ -87,24 +87,24 @@ private partial def hasLiftMethod : Syntax → Bool
 
 structure ExtractMonadResult where
   m            : Expr
-  α            : Expr
+  returnType   : Expr
   expectedType : Expr
 
 private def mkUnknownMonadResult : MetaM ExtractMonadResult := do
   let u ← mkFreshLevelMVar
   let v ← mkFreshLevelMVar
   let m ← mkFreshExprMVar (← mkArrow (mkSort (mkLevelSucc u)) (mkSort (mkLevelSucc v)))
-  let α ← mkFreshExprMVar (mkSort (mkLevelSucc u))
-  return { m, α, expectedType := mkApp m α }
+  let returnType ← mkFreshExprMVar (mkSort (mkLevelSucc u))
+  return { m, returnType, expectedType := mkApp m returnType }
 
 private partial def extractBind (expectedType? : Option Expr) : TermElabM ExtractMonadResult := do
   let some expectedType := expectedType? | mkUnknownMonadResult
   let extractStep? (type : Expr) : MetaM (Option ExtractMonadResult) := do
-    let .app m α _ := type | return none
+    let .app m returnType := type | return none
     try
       let bindInstType ← mkAppM ``Bind #[m]
       discard <| Meta.synthInstance bindInstType
-      return some { m, α, expectedType }
+      return some { m, returnType, expectedType }
     catch _ =>
       return none
   let rec extract? (type : Expr) : MetaM (Option ExtractMonadResult) := do
@@ -615,7 +615,7 @@ def getDoHaveVars (doHave : Syntax) : TermElabM (Array Var) := do
   let arg := doHave[1][0]
   if arg.getKind == ``Lean.Parser.Term.haveIdDecl then
     -- haveIdDecl := leading_parser atomic (haveIdLhs >> " := ") >> termParser
-    -- haveIdLhs := optional (ident >> many (ppSpace >> (simpleBinderWithoutType <|> bracketedBinder))) >> optType
+    -- haveIdLhs := optional (ident >> many (ppSpace >> letIdBinder)) >> optType
     return #[← getHaveIdLhsVar arg[0]]
   else if arg.getKind == ``Lean.Parser.Term.letPatDecl then
     getLetPatDeclVars arg
@@ -863,9 +863,12 @@ def Kind.isRegular : Kind → Bool
   | _            => false
 
 structure Context where
-  m     : Syntax -- Syntax to reference the monad associated with the do notation.
-  uvars : Array Var
-  kind  : Kind
+  /-- Syntax to reference the monad associated with the do notation. -/
+  m          : Syntax
+  /-- Syntax to reference the result of the monadic computation performed by the do notation. -/
+  returnType : Syntax
+  uvars      : Array Var
+  kind       : Kind
 
 abbrev M := ReaderT Context MacroM
 
@@ -1031,8 +1034,8 @@ partial def toTerm (c : Code) : M Syntax := do
     let termMatchAlts := mkNode `Lean.Parser.Term.matchAlts #[mkNullNode termAlts]
     return mkNode `Lean.Parser.Term.«match» #[mkAtomFrom ref "match", genParam, optMotive, discrs, mkAtomFrom ref "with", termMatchAlts]
 
-def run (code : Code) (m : Syntax) (uvars : Array Var := #[]) (kind := Kind.regular) : MacroM Syntax :=
-  toTerm code { m := m, kind := kind, uvars := uvars }
+def run (code : Code) (m : Syntax) (returnType : Syntax) (uvars : Array Var := #[]) (kind := Kind.regular) : MacroM Syntax :=
+  toTerm code { m, returnType, kind, uvars }
 
 /- Given
    - `a` is true if the code block has a `Code.action _` exit point
@@ -1051,8 +1054,8 @@ def mkNestedKind (a r bc : Bool) : Kind :=
   | true,  true,  true  => .nestedPRBC
   | false, false, false => unreachable!
 
-def mkNestedTerm (code : Code) (m : Syntax) (uvars : Array Var) (a r bc : Bool) : MacroM Syntax := do
-  ToTerm.run code m uvars (mkNestedKind a r bc)
+def mkNestedTerm (code : Code) (m : Syntax) (returnType : Syntax) (uvars : Array Var) (a r bc : Bool) : MacroM Syntax := do
+  ToTerm.run code m returnType uvars (mkNestedKind a r bc)
 
 /- Given a term `term` produced by `ToTerm.run`, pattern match on its result.
    See comment at the beginning of the `ToTerm` namespace.
@@ -1119,7 +1122,10 @@ namespace ToCodeBlock
 
 structure Context where
   ref         : Syntax
-  m           : Syntax -- Syntax representing the monad associated with the do notation.
+  /-- Syntax representing the monad associated with the do notation. -/
+  m           : Syntax
+  /-- Syntax to reference the result of the monadic computation performed by the do notation. -/
+  returnType  : Syntax
   mutableVars : VarSet := {}
   insideFor   : Bool := false
 
@@ -1155,7 +1161,7 @@ def mkForInBody  (_ : Syntax) (forInBody : CodeBlock) : M ToForInTermResult := d
   let ctx ← read
   let uvars := forInBody.uvars
   let uvars := varSetToArray uvars
-  let term ← liftMacroM <| ToTerm.run forInBody.code ctx.m uvars (if hasReturn forInBody.code then ToTerm.Kind.forInWithReturn else ToTerm.Kind.forIn)
+  let term ← liftMacroM <| ToTerm.run forInBody.code ctx.m ctx.returnType uvars (if hasReturn forInBody.code then ToTerm.Kind.forInWithReturn else ToTerm.Kind.forIn)
   return ⟨uvars, term⟩
 
 def ensureInsideFor : M Unit :=
@@ -1385,11 +1391,13 @@ mutual
       let doForDecls := doForDecls.eraseIdx 1
       let body := doFor[3]
       withFreshMacroScope do
-        let toStreamFn ← withRef ys ``(toStream)
+        /- Recall that `@` (explicit) disables `coeAtOutParam`.
+           We used `@` at `Stream` functions to make sure `resultIsOutParamSupport` is not used. -/
+        let toStreamApp ← withRef ys `(@toStream _ _ _ $ys)
         let auxDo ←
-          `(do let mut s := $toStreamFn:ident $ys
+          `(do let mut s := $toStreamApp:term
                for $doForDecls:doForDecl,* do
-                 match Stream.next? s with
+                 match @Stream.next? _ _ _ s with
                  | none => break
                  | some ($y, s') =>
                    s := s'
@@ -1411,10 +1419,11 @@ mutual
       let uvarsTuple ← liftMacroM do mkTuple uvars
       if hasReturn forInBodyCodeBlock.code then
         let forInBody ← liftMacroM <| destructTuple uvars (← `(r)) forInBody
+        let optType ← `(Option $((← read).returnType))
         let forInTerm ← if let some h := h? then
-          `(for_in'% $(xs) (MProd.mk none $uvarsTuple) fun $x $h r => let r := r.2; $forInBody)
+          `(for_in'% $(xs) (MProd.mk (none : $optType) $uvarsTuple) fun $x $h (r : MProd $optType _) => let r := r.2; $forInBody)
         else
-          `(for_in% $(xs) (MProd.mk none $uvarsTuple) fun $x r => let r := r.2; $forInBody)
+          `(for_in% $(xs) (MProd.mk (none : $optType) $uvarsTuple) fun $x (r : MProd $optType _) => let r := r.2; $forInBody)
         let auxDo ← `(do let r ← $forInTerm:term;
                          $uvarsTuple:term := r.2;
                          match r.1 with
@@ -1466,7 +1475,7 @@ mutual
   partial def doTryToCode (doTry : Syntax) (doElems: List Syntax) : M CodeBlock := do
     let tryCode ← doSeqToCode (getDoSeqElems doTry[1])
     let optFinally := doTry[3]
-    let catches ← doTry[2].getArgs.mapM fun catchStx => do
+    let catches ← doTry[2].getArgs.mapM fun catchStx : Syntax => do
       if catchStx.getKind == ``Lean.Parser.Term.doCatch then
         let x       := catchStx[1]
         if x.isIdent then
@@ -1493,7 +1502,7 @@ mutual
     let bc    := tryCatchPred tryCode catches finallyCode? hasBreakContinue
     let toTerm (codeBlock : CodeBlock) : M Syntax := do
       let codeBlock ← liftM $ extendUpdatedVars codeBlock ws
-      liftMacroM <| ToTerm.mkNestedTerm codeBlock.code ctx.m uvars a r bc
+      liftMacroM <| ToTerm.mkNestedTerm codeBlock.code ctx.m ctx.returnType uvars a r bc
     let term ← toTerm tryCode
     let term ← catches.foldlM (init := term) fun term «catch» => do
       let catchTerm ← toTerm «catch».codeBlock
@@ -1509,7 +1518,7 @@ mutual
           throwError "'finally' currently does not support reassignments"
         if hasBreakContinueReturn finallyCode.code then
           throwError "'finally' currently does 'return', 'break', nor 'continue'"
-        let finallyTerm ← liftMacroM <| ToTerm.run finallyCode.code ctx.m {} ToTerm.Kind.regular
+        let finallyTerm ← liftMacroM <| ToTerm.run finallyCode.code ctx.m ctx.returnType {} ToTerm.Kind.regular
         ``(tryFinally $term $finallyTerm)
     let doElemsNew ← liftMacroM <| ToTerm.matchNestedTermResult term uvars a r bc
     doSeqToCode (doElemsNew ++ doElems)
@@ -1590,8 +1599,8 @@ mutual
             throwError "unexpected do-element of kind {doElem.getKind}:\n{doElem}"
 end
 
-def run (doStx : Syntax) (m : Syntax) : TermElabM CodeBlock :=
-  (doSeqToCode <| getDoSeqElems <| getDoSeq doStx).run { ref := doStx, m }
+def run (doStx : Syntax) (m : Syntax) (returnType : Syntax) : TermElabM CodeBlock :=
+  (doSeqToCode <| getDoSeqElems <| getDoSeq doStx).run { ref := doStx, m, returnType }
 
 end ToCodeBlock
 
@@ -1599,8 +1608,9 @@ end ToCodeBlock
   tryPostponeIfNoneOrMVar expectedType?
   let bindInfo ← extractBind expectedType?
   let m ← Term.exprToSyntax bindInfo.m
-  let codeBlock ← ToCodeBlock.run stx m
-  let stxNew ← liftMacroM <| ToTerm.run codeBlock.code m
+  let returnType ← Term.exprToSyntax bindInfo.returnType
+  let codeBlock ← ToCodeBlock.run stx m returnType
+  let stxNew ← liftMacroM <| ToTerm.run codeBlock.code m returnType
   trace[Elab.do] stxNew
   withMacroExpansion stx stxNew <| elabTermEnsuringType stxNew bindInfo.expectedType
 

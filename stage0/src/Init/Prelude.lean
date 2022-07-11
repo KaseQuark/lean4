@@ -281,10 +281,11 @@ abbrev DecidableRel {α : Sort u} (r : α → α → Prop) :=
 abbrev DecidableEq (α : Sort u) :=
   (a b : α) → Decidable (Eq a b)
 
-def decEq {α : Sort u} [s : DecidableEq α] (a b : α) : Decidable (Eq a b) :=
-  s a b
+def decEq {α : Sort u} [inst : DecidableEq α] (a b : α) : Decidable (Eq a b) :=
+  inst a b
 
-theorem decide_eq_true : [s : Decidable p] → p → Eq (decide p) true
+set_option linter.unusedVariables false in
+theorem decide_eq_true : [inst : Decidable p] → p → Eq (decide p) true
   | isTrue  _, _   => rfl
   | isFalse h₁, h₂ => absurd h₂ h₁
 
@@ -292,18 +293,18 @@ theorem decide_eq_false : [Decidable p] → Not p → Eq (decide p) false
   | isTrue  h₁, h₂ => absurd h₁ h₂
   | isFalse _, _   => rfl
 
-theorem of_decide_eq_true [s : Decidable p] : Eq (decide p) true → p := fun h =>
-  match (generalizing := false) s with
+theorem of_decide_eq_true [inst : Decidable p] : Eq (decide p) true → p := fun h =>
+  match (generalizing := false) inst with
   | isTrue  h₁ => h₁
   | isFalse h₁ => absurd h (ne_true_of_eq_false (decide_eq_false h₁))
 
-theorem of_decide_eq_false [s : Decidable p] : Eq (decide p) false → Not p := fun h =>
-  match (generalizing := false) s with
+theorem of_decide_eq_false [inst : Decidable p] : Eq (decide p) false → Not p := fun h =>
+  match (generalizing := false) inst with
   | isTrue  h₁ => absurd h (ne_false_of_eq_true (decide_eq_true h₁))
   | isFalse h₁ => h₁
 
-theorem of_decide_eq_self_eq_true [s : DecidableEq α] (a : α) : Eq (decide (Eq a a)) true :=
-  match (generalizing := false) s a a with
+theorem of_decide_eq_self_eq_true [inst : DecidableEq α] (a : α) : Eq (decide (Eq a a)) true :=
+  match (generalizing := false) inst a a with
   | isTrue  _  => rfl
   | isFalse h₁ => absurd rfl h₁
 
@@ -1207,8 +1208,8 @@ instance (p₁ p₂ : String.Pos) : Decidable (LT.lt p₁ p₂) :=
   stopPos  := s.endPos
 }
 
-unsafe def unsafeCast {α : Type u} {β : Type v} (a : α) : β :=
-  ULift.down.{max u v} (cast lcProof (ULift.up.{max u v} a))
+unsafe def unsafeCast {α : Sort u} {β : Sort v} (a : α) : β :=
+  PLift.down (ULift.down.{max u v} (cast lcProof (ULift.up.{max u v} (PLift.up a))))
 
 @[neverExtract, extern "lean_panic_fn"]
 opaque panicCore {α : Type u} [Inhabited α] (msg : String) : α
@@ -1227,6 +1228,11 @@ def panic {α : Type u} [Inhabited α] (msg : String) : α :=
 
 -- TODO: this be applied directly to `Inhabited`'s definition when we remove the above workaround
 attribute [nospecialize] Inhabited
+
+class GetElem (Cont : Type u) (Idx : Type v) (Elem : outParam (Type w)) (Dom : outParam (Cont → Idx → Prop)) where
+  getElem (xs : Cont) (i : Idx) (h : Dom xs i) : Elem
+
+export GetElem (getElem)
 
 /-
 The Compiler has special support for arrays.
@@ -1263,11 +1269,8 @@ def Array.get {α : Type u} (a : @& Array α) (i : @& Fin a.size) : α :=
 def Array.get! {α : Type u} [Inhabited α] (a : @& Array α) (i : @& Nat) : α :=
   Array.getD a i default
 
-abbrev Array.getOp {α : Type u} (self : Array α) (idx : Fin self.size) : α :=
-  self.get idx
-
-abbrev Array.getOp! {α : Type u} [Inhabited α] (self : Array α) (idx : Nat) : α :=
-  self.get! idx
+instance : GetElem (Array α) Nat α fun xs i => LT.lt i xs.size where
+  getElem xs i h := xs.get ⟨i, h⟩
 
 @[extern "lean_array_push"]
 def Array.push {α : Type u} (a : Array α) (v : α) : Array α := {
@@ -1744,16 +1747,16 @@ namespace Lean
 /- Hierarchical names -/
 inductive Name where
   | anonymous : Name
-  | str : Name → String → UInt64 → Name
-  | num : Name → Nat → UInt64 → Name
+  | str : Name → String → Name
+  | num : Name → Nat → Name
+with
+  @[computedField] hash : Name → UInt64
+    | .anonymous => .ofNatCore 1723 (by decide)
+    | .str p s => mixHash p.hash s.hash
+    | .num p v => mixHash p.hash (dite (LT.lt v UInt64.size) (fun h => UInt64.ofNatCore v h) (fun _ => UInt64.ofNatCore 17 (by decide)))
 
 instance : Inhabited Name where
   default := Name.anonymous
-
-protected def Name.hash : Name → UInt64
-  | Name.anonymous => UInt64.ofNatCore 1723 (by decide)
-  | Name.str _ _ h => h
-  | Name.num _ _ h => h
 
 instance : Hashable Name where
   hash := Name.hash
@@ -1761,30 +1764,30 @@ instance : Hashable Name where
 namespace Name
 
 @[export lean_name_mk_string]
-def mkStr (p : Name) (s : String) : Name :=
-  Name.str p s (mixHash (hash p) (hash s))
+abbrev mkStr (p : Name) (s : String) : Name :=
+  Name.str p s
 
 @[export lean_name_mk_numeral]
-def mkNum (p : Name) (v : Nat) : Name :=
-  Name.num p v (mixHash (hash p) (dite (LT.lt v UInt64.size) (fun h => UInt64.ofNatCore v h) (fun _ => UInt64.ofNatCore 17 (by decide))))
+abbrev mkNum (p : Name) (v : Nat) : Name :=
+  Name.num p v
 
-def mkSimple (s : String) : Name :=
+abbrev mkSimple (s : String) : Name :=
   mkStr Name.anonymous s
 
 @[extern "lean_name_eq"]
 protected def beq : (@& Name) → (@& Name) → Bool
-  | anonymous,   anonymous   => true
-  | str p₁ s₁ _, str p₂ s₂ _ => and (BEq.beq s₁ s₂) (Name.beq p₁ p₂)
-  | num p₁ n₁ _, num p₂ n₂ _ => and (BEq.beq n₁ n₂) (Name.beq p₁ p₂)
-  | _,           _           => false
+  | anonymous, anonymous => true
+  | str p₁ s₁, str p₂ s₂ => and (BEq.beq s₁ s₂) (Name.beq p₁ p₂)
+  | num p₁ n₁, num p₂ n₂ => and (BEq.beq n₁ n₂) (Name.beq p₁ p₂)
+  | _,         _         => false
 
 instance : BEq Name where
   beq := Name.beq
 
 protected def append : Name → Name → Name
   | n, anonymous => n
-  | n, str p s _ => Name.mkStr (Name.append n p) s
-  | n, num p d _ => Name.mkNum (Name.append n p) d
+  | n, str p s => Name.mkStr (Name.append n p) s
+  | n, num p d => Name.mkNum (Name.append n p) d
 
 instance : Append Name where
   append := Name.append
@@ -1908,9 +1911,8 @@ def getArg (stx : Syntax) (i : Nat) : Syntax :=
   | Syntax.node _ _ args => args.getD i Syntax.missing
   | _                    => Syntax.missing
 
--- Add `stx[i]` as sugar for `stx.getArg i`
-@[inline] def getOp (self : Syntax) (idx : Nat) : Syntax :=
-  self.getArg idx
+instance : GetElem Syntax Nat Syntax fun _ _ => True where
+  getElem stx i _ := stx.getArg i
 
 def getArgs (stx : Syntax) : Array Syntax :=
   match stx with
@@ -2141,16 +2143,16 @@ The delimiter `_hyg` is used just to improve the `hasMacroScopes` performance.
 -/
 
 def Name.hasMacroScopes : Name → Bool
-  | str _ s _   => beq s "_hyg"
-  | num p _   _ => hasMacroScopes p
-  | _           => false
+  | str _ s => beq s "_hyg"
+  | num p _ => hasMacroScopes p
+  | _       => false
 
 private def eraseMacroScopesAux : Name → Name
-  | Name.str p s _   => match beq s "_@" with
+  | .str p s   => match beq s "_@" with
     | true  => p
     | false => eraseMacroScopesAux p
-  | Name.num p _ _   => eraseMacroScopesAux p
-  | Name.anonymous   => Name.anonymous
+  | .num p _   => eraseMacroScopesAux p
+  | .anonymous => Name.anonymous
 
 @[export lean_erase_macro_scopes]
 def Name.eraseMacroScopes (n : Name) : Name :=
@@ -2159,8 +2161,8 @@ def Name.eraseMacroScopes (n : Name) : Name :=
   | false => n
 
 private def simpMacroScopesAux : Name → Name
-  | Name.num p i _ => Name.mkNum (simpMacroScopesAux p) i
-  | n              => eraseMacroScopesAux n
+  | .num p i => Name.mkNum (simpMacroScopesAux p) i
+  | n        => eraseMacroScopesAux n
 
 /- Helper function we use to create binder names that do not need to be unique. -/
 @[export lean_simp_macro_scopes]
@@ -2186,30 +2188,30 @@ def MacroScopesView.review (view : MacroScopesView) : Name :=
     view.scopes.foldl Name.mkNum base
 
 private def assembleParts : List Name → Name → Name
-  | List.nil,                      acc => acc
-  | List.cons (Name.str _ s _) ps, acc => assembleParts ps (Name.mkStr acc s)
-  | List.cons (Name.num _ n _) ps, acc => assembleParts ps (Name.mkNum acc n)
-  | _,                             _   => panic "Error: unreachable @ assembleParts"
+  | .nil,                acc => acc
+  | .cons (.str _ s) ps, acc => assembleParts ps (Name.mkStr acc s)
+  | .cons (.num _ n) ps, acc => assembleParts ps (Name.mkNum acc n)
+  | _,                   _   => panic "Error: unreachable @ assembleParts"
 
 private def extractImported (scps : List MacroScope) (mainModule : Name) : Name → List Name → MacroScopesView
-  | n@(Name.str p str _), parts =>
+  | n@(Name.str p str), parts =>
     match beq str "_@" with
     | true  => { name := p, mainModule := mainModule, imported := assembleParts parts Name.anonymous, scopes := scps }
     | false => extractImported scps mainModule p (List.cons n parts)
-  | n@(Name.num p _ _), parts => extractImported scps mainModule p (List.cons n parts)
+  | n@(Name.num p _), parts => extractImported scps mainModule p (List.cons n parts)
   | _,                    _     => panic "Error: unreachable @ extractImported"
 
 private def extractMainModule (scps : List MacroScope) : Name → List Name → MacroScopesView
-  | n@(Name.str p str _), parts =>
+  | n@(Name.str p str), parts =>
     match beq str "_@" with
     | true  => { name := p, mainModule := assembleParts parts Name.anonymous, imported := Name.anonymous, scopes := scps }
     | false => extractMainModule scps p (List.cons n parts)
-  | n@(Name.num _ _ _), acc => extractImported scps (assembleParts acc Name.anonymous) n List.nil
+  | n@(Name.num _ _), acc => extractImported scps (assembleParts acc Name.anonymous) n List.nil
   | _,                    _   => panic "Error: unreachable @ extractMainModule"
 
 private def extractMacroScopesAux : Name → List MacroScope → MacroScopesView
-  | Name.num p scp _, acc => extractMacroScopesAux p (List.cons scp acc)
-  | Name.str p _   _, acc => extractMainModule acc p List.nil -- str must be "_hyg"
+  | Name.num p scp, acc => extractMacroScopesAux p (List.cons scp acc)
+  | Name.str p _  , acc => extractMainModule acc p List.nil -- str must be "_hyg"
   | _,                _   => panic "Error: unreachable @ extractMacroScopesAux"
 
 /--

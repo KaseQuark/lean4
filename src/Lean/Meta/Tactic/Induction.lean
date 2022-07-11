@@ -14,7 +14,7 @@ import Lean.Meta.Tactic.FVarSubst
 namespace Lean.Meta
 
 private partial def getTargetArity : Expr → Nat
-  | Expr.mdata _ b _     => getTargetArity b
+  | Expr.mdata _ b       => getTargetArity b
   | Expr.forallE _ _ b _ => getTargetArity b + 1
   | e                    => if e.isHeadBetaTarget then getTargetArity e.headBeta else 0
 
@@ -79,7 +79,7 @@ private partial def finalize
         | Expr.forallE n d _ c =>
           let d := d.headBeta
           -- Remark is givenNames is not empty, then user provided explicit alternatives for each minor premise
-          if c.binderInfo.isInstImplicit && givenNames.isEmpty then
+          if c.isInstImplicit && givenNames.isEmpty then
             match (← synthInstance? d) with
             | some inst =>
               let recursor := mkApp recursor inst
@@ -134,7 +134,6 @@ def induction (mvarId : MVarId) (majorFVarId : FVarId) (recursorName : Name) (gi
         match paramPos? with
         | none          => pure ()
         | some paramPos => if paramPos ≥ majorTypeArgs.size then throwTacticEx `induction mvarId m!"major premise type is ill-formed{indentExpr majorType}"
-      let mctx ← getMCtx
       let indices ← recursorInfo.indicesPos.toArray.mapM fun idxPos => do
         if idxPos ≥ majorTypeArgs.size then throwTacticEx `induction mvarId m!"major premise type is ill-formed{indentExpr majorType}"
         let idx := majorTypeArgs.get! idxPos
@@ -143,17 +142,18 @@ def induction (mvarId : MVarId) (majorFVarId : FVarId) (recursorName : Name) (gi
           let arg := majorTypeArgs[i]!
           if i != idxPos && arg == idx then
             throwTacticEx `induction mvarId m!"'{idx}' is an index in major premise, but it occurs more than once{indentExpr majorType}"
-          if i < idxPos && mctx.exprDependsOn arg idx.fvarId! then
-            throwTacticEx `induction mvarId m!"'{idx}' is an index in major premise, but it occurs in previous arguments{indentExpr majorType}"
+          if i < idxPos then
+            if (← exprDependsOn arg idx.fvarId!) then
+              throwTacticEx `induction mvarId m!"'{idx}' is an index in major premise, but it occurs in previous arguments{indentExpr majorType}"
           -- If arg is also and index and a variable occurring after `idx`, we need to make sure it doesn't depend on `idx`.
           -- Note that if `arg` is not a variable, we will fail anyway when we visit it.
           if i > idxPos && recursorInfo.indicesPos.contains i && arg.isFVar then
             let idxDecl ← getLocalDecl idx.fvarId!
-            if mctx.localDeclDependsOn idxDecl arg.fvarId! then
+            if (← localDeclDependsOn idxDecl arg.fvarId!) then
               throwTacticEx `induction mvarId m!"'{idx}' is an index in major premise, but it depends on index occurring at position #{i+1}"
         pure idx
       let target ← getMVarType mvarId
-      if !recursorInfo.depElim && mctx.exprDependsOn target majorFVarId then
+      if (← pure !recursorInfo.depElim <&&> exprDependsOn target majorFVarId) then
         throwTacticEx `induction mvarId m!"recursor '{recursorName}' does not support dependent elimination, but conclusion depends on major premise"
       -- Revert indices and major premise preserving variable order
       let (reverted, mvarId) ← revert mvarId ((indices.map Expr.fvarId!).push majorFVarId) true
@@ -181,7 +181,7 @@ def induction (mvarId : MVarId) (majorFVarId : FVarId) (recursorName : Name) (gi
         let some majorType ← whnfUntil majorLocalDecl.type recursorInfo.typeName | throwUnexpectedMajorType mvarId majorLocalDecl.type
         majorType.withApp fun majorTypeFn majorTypeArgs => do
           match majorTypeFn with
-          | Expr.const _               majorTypeFnLevels _ => do
+          | Expr.const _ majorTypeFnLevels => do
             let majorTypeFnLevels := majorTypeFnLevels.toArray
             let (recursorLevels, foundTargetLevel) ← recursorInfo.univLevelPos.foldlM (init := (#[], false))
                 fun (recursorLevels, foundTargetLevel) (univPos : RecursorUnivLevelPos) => do

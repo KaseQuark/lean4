@@ -60,7 +60,7 @@ def resolveSectionVariable (sectionVars : NameMap Name) (id : Name) : List (Name
   -- decode macro scopes from name before recursion
   let extractionResult := extractMacroScopes id
   let rec loop : Name → List String → List (Name × List String)
-    | id@(Name.str p s _), projs =>
+    | id@(.str p s), projs =>
       -- NOTE: we assume that macro scopes always belong to the projected constant, not the projections
       let id := { extractionResult with name := id }.review
       match sectionVars.find? id with
@@ -179,7 +179,7 @@ def getQuotKind (stx : Syntax) : TermElabM SyntaxNodeKind := do
   | ``Parser.Term.attr.quot => pure `attr
   | ``Parser.Term.prio.quot => pure `prio
   | ``Parser.Term.doElem.quot => pure `doElem
-  | Name.str kind "quot" _ => return kind
+  | .str kind "quot" => return kind
   | ``dynamicQuot =>
     match (← resolveGlobalConst stx[1]) with
     | [parser] => pure parser
@@ -539,7 +539,7 @@ private partial def compileStxMatch (discrs : List Term) (alts : List Alt) : Ter
         withFreshMacroScope $ compileStxMatch (newDiscrs ++ discrs) yesAlts.toList)
       (no := withFreshMacroScope $ compileStxMatch (discr::discrs) nonExhaustiveAlts.toList)
     for d in floatedLetDecls do
-      stx ← `(let_delayed $(⟨d⟩):letDecl; $stx)
+      stx ← `(let_delayed $d:letDecl; $stx)
     `(let discr := $discr; $stx)
   | _, _ => unreachable!
 

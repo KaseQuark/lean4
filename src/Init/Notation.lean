@@ -23,7 +23,7 @@ end Lean.Parser.Syntax
 
 namespace Lean
 
-instance : Coe (TSyntax ks) Syntax where
+instance : CoeHead (TSyntax ks) Syntax where
   coe stx := stx.raw
 
 instance : Coe SyntaxNodeKind SyntaxNodeKinds where
@@ -100,6 +100,7 @@ macro_rules | `($x + $y)   => `(binop% HAdd.hAdd $x $y)
 macro_rules | `($x - $y)   => `(binop% HSub.hSub $x $y)
 macro_rules | `($x * $y)   => `(binop% HMul.hMul $x $y)
 macro_rules | `($x / $y)   => `(binop% HDiv.hDiv $x $y)
+macro_rules | `($x % $y)   => `(binop% HMod.hMod $x $y)
 macro_rules | `($x ++ $y)  => `(binop% HAppend.hAppend $x $y)
 
 -- declare ASCII alternatives first so that the latter Unicode unexpander wins
@@ -219,7 +220,7 @@ macro_rules
       match i, skip with
       | 0,   _     => pure result
       | i+1, true  => expandListLit i false result
-      | i+1, false => expandListLit i true  (← ``(List.cons $(⟨elems.elemsAndSeps[i]!⟩) $result))
+      | i+1, false => expandListLit i true  (← ``(List.cons $(⟨elems.elemsAndSeps.get! i⟩) $result))
     if elems.elemsAndSeps.size < 64 then
       expandListLit elems.elemsAndSeps.size false (← ``(List.nil))
     else
@@ -237,5 +238,3 @@ declare_syntax_cat rawStx
 
 instance : Coe Syntax (TSyntax `rawStx) where
   coe stx := ⟨stx⟩
-
-macro:max a:term noWs "[" i:term ", " h:term "]" : term => `($a[⟨$i, $h⟩])

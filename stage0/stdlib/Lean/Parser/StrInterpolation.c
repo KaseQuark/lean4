@@ -14,8 +14,8 @@
 extern "C" {
 #endif
 lean_object* l_Lean_Parser_ParserState_mkError(lean_object*, lean_object*);
+lean_object* l_Lean_Name_str___override(lean_object*, lean_object*);
 lean_object* l_Lean_Parser_quotedCharCoreFn(lean_object*, lean_object*, lean_object*);
-lean_object* lean_name_mk_string(lean_object*, lean_object*);
 uint8_t l_Lean_Parser_isQuotableCharDefault(uint32_t);
 static lean_object* l_Lean_Parser_interpolatedStrFn_parse___closed__5;
 lean_object* l_Lean_Parser_ParserState_next(lean_object*, lean_object*, lean_object*);
@@ -27,9 +27,9 @@ lean_object* l_Lean_Parser_mkAtomicInfo(lean_object*);
 lean_object* l_Lean_Parser_mkNodeToken(lean_object*, lean_object*, lean_object*, lean_object*);
 static lean_object* l_Lean_Parser_interpolatedStrFn_parse___closed__7;
 static lean_object* l_Lean_Parser_interpolatedStrFn_parse___closed__4;
-uint8_t l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_800____at_Lean_Parser_ParserState_hasError___spec__1(lean_object*, lean_object*);
 lean_object* lean_string_utf8_next(lean_object*, lean_object*);
 static lean_object* l_Lean_Parser_interpolatedStr___elambda__1___closed__1;
+uint8_t l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at_Lean_Parser_ParserState_hasError___spec__1(lean_object*, lean_object*);
 lean_object* l_Lean_Parser_ParserState_setPos(lean_object*, lean_object*);
 static lean_object* l_Lean_Parser_interpolatedStrFn_parse___closed__2;
 static lean_object* l_Lean_Parser_interpolatedStrFn___closed__1;
@@ -100,7 +100,7 @@ _start:
 lean_object* x_1; lean_object* x_2; lean_object* x_3; 
 x_1 = lean_box(0);
 x_2 = l_Lean_Parser_interpolatedStrFn_parse___closed__1;
-x_3 = lean_name_mk_string(x_1, x_2);
+x_3 = l_Lean_Name_str___override(x_1, x_2);
 return x_3;
 }
 }
@@ -118,7 +118,7 @@ _start:
 lean_object* x_1; lean_object* x_2; lean_object* x_3; 
 x_1 = lean_box(0);
 x_2 = l_Lean_Parser_interpolatedStrFn_parse___closed__3;
-x_3 = lean_name_mk_string(x_1, x_2);
+x_3 = l_Lean_Name_str___override(x_1, x_2);
 return x_3;
 }
 }
@@ -188,7 +188,7 @@ x_21 = lean_apply_2(x_1, x_5, x_20);
 x_22 = lean_ctor_get(x_21, 4);
 lean_inc(x_22);
 x_23 = lean_box(0);
-x_24 = l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_800____at_Lean_Parser_ParserState_hasError___spec__1(x_22, x_23);
+x_24 = l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at_Lean_Parser_ParserState_hasError___spec__1(x_22, x_23);
 lean_dec(x_22);
 if (x_24 == 0)
 {
@@ -239,7 +239,7 @@ x_39 = l_Lean_Parser_quotedCharCoreFn(x_38, x_5, x_11);
 x_40 = lean_ctor_get(x_39, 4);
 lean_inc(x_40);
 x_41 = lean_box(0);
-x_42 = l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_800____at_Lean_Parser_ParserState_hasError___spec__1(x_40, x_41);
+x_42 = l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at_Lean_Parser_ParserState_hasError___spec__1(x_40, x_41);
 lean_dec(x_40);
 if (x_42 == 0)
 {

@@ -99,7 +99,7 @@ private def elabParserMacroAux (prec e : Term) (withAnonymousAntiquot : Bool) : 
   let (some declName) ← getDeclName?
     | throwError "invalid `leading_parser` macro, it must be used in definitions"
   match extractMacroScopes declName with
-  | { name := Name.str _ s _, .. } =>
+  | { name := .str _ s, .. } =>
     let kind := quote declName
     let s    := quote s
     ``(withAntiquot (mkAntiquot $s $kind $(quote withAnonymousAntiquot)) (leadingNode $kind $prec $e))
@@ -206,7 +206,7 @@ where
     extra state, and return it. Otherwise, we just return `stx`. -/
   go : Syntax → StateT (Array Ident) MacroM Syntax
     | stx@`(($(_))) => pure stx
-    | stx@`(·) => withFreshMacroScope do
+    | `(·) => withFreshMacroScope do
       let id : Ident ← `(a)
       modify fun s => s.push id
       pure id
@@ -304,7 +304,8 @@ See the Chapter "Quantifiers and Equality" in the manual "Theorem Proving in Lea
   let expectedType? ← tryPostponeIfHasMVars? expectedType?
   match stx with
   | `($heqStx ▸ $hStx) => do
-     let mut heq ← elabTerm heqStx none
+     synthesizeSyntheticMVars
+     let mut heq ← withSynthesize <| elabTerm heqStx none
      let heqType ← inferType heq
      let heqType ← instantiateMVars heqType
      match (← Meta.matchEq? heqType) with
@@ -322,7 +323,7 @@ See the Chapter "Quantifiers and Equality" in the manual "Theorem Proving in Lea
          unless expectedAbst.hasLooseBVars do
            expectedAbst ← kabstract expectedType lhs
            unless expectedAbst.hasLooseBVars do
-             throwError "invalid `▸` notation, expected type{indentExpr expectedType}\ndoes contain equation left-hand-side nor right-hand-side{indentExpr heqType}"
+             throwError "invalid `▸` notation, expected result type of cast is {indentExpr expectedType}\nhowever, the equality {indentExpr heq}\nof type {indentExpr heqType}\ndoes not contain the expected result type on either the left or the right hand side"
            heq ← mkEqSymm heq
            (lhs, rhs) := (rhs, lhs)
          let hExpectedType := expectedAbst.instantiate1 lhs

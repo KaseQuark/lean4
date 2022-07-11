@@ -103,7 +103,7 @@ private def deriveStructureInstance (indVal : InductiveVal) (params : Array Expr
       let mut fieldTp := fieldTp
       if isOptField fieldName then
         if !fieldTp.isAppOf ``Option then
-          throwError "optional field '{fieldName}' has type{indentD m!"{fieldTp}"}\nbut is expected to have type{indentD "Option _"}"
+          throwError "optional field '{fieldName}' has type{indentD m!"{fieldTp}"}\nbut is expected to have type{indentD "Option _"}" --"
         fieldTp := fieldTp.getArg! 0
 
       -- postulate that the field has an encoding and remember the encoding's binder name
@@ -177,7 +177,7 @@ private def deriveInductiveInstance (indVal : InductiveVal) (params : Array Expr
     let argFVars ← argVars.mapM (LocalDecl.fvarId <$> getFVarLocalDecl ·)
     for arg in argVars do
       let argTp ← inferType arg
-      if (← getMCtx).findExprDependsOn argTp (pf := fun fv => argFVars.contains fv) then
+      if (← findExprDependsOn argTp (pf := fun fv => argFVars.contains fv)) then
         throwError "cross-argument dependencies are not supported ({arg} : {argTp})"
 
       if (← acc.encArgTypes.getMatch argTp).isEmpty then

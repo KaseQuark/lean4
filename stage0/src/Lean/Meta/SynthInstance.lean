@@ -86,19 +86,23 @@ structure State where
   nextIdx : Nat := 0
   lmap    : HashMap MVarId Level := {}
   emap    : HashMap MVarId Expr := {}
+  mctx    : MetavarContext
 
-abbrev M := ReaderT MetavarContext (StateM State)
+abbrev M := StateM State
+
+instance : MonadMCtx M where
+  getMCtx := return (← get).mctx
+  modifyMCtx f := modify fun s => { s with mctx := f s.mctx }
 
 partial def normLevel (u : Level) : M Level := do
   if !u.hasMVar then
     return u
   else match u with
-    | Level.succ v _      => return u.updateSucc! (← normLevel v)
-    | Level.max v w _     => return u.updateMax! (← normLevel v) (← normLevel w)
-    | Level.imax v w _    => return u.updateIMax! (← normLevel v) (← normLevel w)
-    | Level.mvar mvarId _ =>
-      let mctx ← read
-      if !mctx.isLevelAssignable mvarId then
+    | Level.succ v      => return u.updateSucc! (← normLevel v)
+    | Level.max v w     => return u.updateMax! (← normLevel v) (← normLevel w)
+    | Level.imax v w    => return u.updateIMax! (← normLevel v) (← normLevel w)
+    | Level.mvar mvarId =>
+      if !(← isLevelMVarAssignable mvarId) then
         return u
       else
         let s ← get
@@ -114,16 +118,16 @@ partial def normExpr (e : Expr) : M Expr := do
   if !e.hasMVar then
     pure e
   else match e with
-    | Expr.const _ us _    => return e.updateConst! (← us.mapM normLevel)
-    | Expr.sort u _        => return e.updateSort! (← normLevel u)
-    | Expr.app f a _       => return e.updateApp! (← normExpr f) (← normExpr a)
+    | Expr.const _ us      => return e.updateConst! (← us.mapM normLevel)
+    | Expr.sort u          => return e.updateSort! (← normLevel u)
+    | Expr.app f a         => return e.updateApp! (← normExpr f) (← normExpr a)
     | Expr.letE _ t v b _  => return e.updateLet! (← normExpr t) (← normExpr v) (← normExpr b)
     | Expr.forallE _ d b _ => return e.updateForallE! (← normExpr d) (← normExpr b)
     | Expr.lam _ d b _     => return e.updateLambdaE! (← normExpr d) (← normExpr b)
-    | Expr.mdata _ b _     => return e.updateMData! (← normExpr b)
-    | Expr.proj _ _ b _    => return e.updateProj! (← normExpr b)
-    | Expr.mvar mvarId _   =>
-      if !(← read).isExprAssignable mvarId then
+    | Expr.mdata _ b       => return e.updateMData! (← normExpr b)
+    | Expr.proj _ _ b      => return e.updateProj! (← normExpr b)
+    | Expr.mvar mvarId     =>
+      if !(← isExprMVarAssignable mvarId) then
         return e
       else
         let s ← get
@@ -138,8 +142,10 @@ partial def normExpr (e : Expr) : M Expr := do
 end MkTableKey
 
 /- Remark: `mkTableKey` assumes `e` does not contain assigned metavariables. -/
-def mkTableKey (mctx : MetavarContext) (e : Expr) : Expr :=
-  MkTableKey.normExpr e mctx |>.run' {}
+def mkTableKey [Monad m] [MonadMCtx m] (e : Expr) : m Expr := do
+  let (r, s) := MkTableKey.normExpr e |>.run { mctx := (← getMCtx) }
+  setMCtx s.mctx
+  return r
 
 structure Answer where
   result     : AbstractMVarsResult
@@ -195,7 +201,7 @@ def getInstances (type : Expr) : MetaM (Array Expr) := do
       let result := result.insertionSort fun e₁ e₂ => e₁.priority < e₂.priority
       let erasedInstances ← getErasedInstances
       let result ← result.filterMapM fun e => match e.val with
-        | Expr.const constName us _ =>
+        | Expr.const constName us =>
           if erasedInstances.contains constName then
             return none
           else
@@ -251,7 +257,7 @@ def mkTableKeyFor (mctx : MetavarContext) (mvar : Expr) : SynthM Expr :=
   withMCtx mctx do
     let mvarType ← inferType mvar
     let mvarType ← instantiateMVars mvarType
-    return mkTableKey mctx mvarType
+    mkTableKey mvarType
 
 /- See `getSubgoals` and `getSubgoalsAux`
 
@@ -266,13 +272,13 @@ structure SubgoalsResult where
 
 private partial def getSubgoalsAux (lctx : LocalContext) (localInsts : LocalInstances) (xs : Array Expr)
     : Array Expr → Nat → List Expr → Expr → Expr → MetaM SubgoalsResult
-  | args, j, subgoals, instVal, Expr.forallE _ d b c => do
+  | args, j, subgoals, instVal, Expr.forallE _ d b bi => do
     let d        := d.instantiateRevRange j args.size args
     let mvarType ← mkForallFVars xs d
     let mvar     ← mkFreshExprMVarAt lctx localInsts mvarType
     let arg      := mkAppN mvar xs
     let instVal  := mkApp instVal arg
-    let subgoals := if c.binderInfo.isInstImplicit then mvar::subgoals else subgoals
+    let subgoals := if bi.isInstImplicit then mvar::subgoals else subgoals
     let args     := args.push (mkAppN mvar xs)
     getSubgoalsAux lctx localInsts xs args j subgoals instVal b
   | args, j, subgoals, instVal, type => do
@@ -302,7 +308,7 @@ def getSubgoals (lctx : LocalContext) (localInsts : LocalInstances) (xs : Array 
   let instType ← inferType inst
   let result ← getSubgoalsAux lctx localInsts xs #[] 0 [] inst instType
   match inst.getAppFn with
-  | Expr.const constName _ _ =>
+  | Expr.const constName _ =>
     let env ← getEnv
     if hasInferTCGoalsRLAttribute env constName then
       return result
@@ -483,7 +489,7 @@ def consume (cNode : ConsumerNode) : SynthM Unit := do
        match (← removeUnusedArguments? cNode.mctx mvar) with
        | none => newSubgoal cNode.mctx key mvar waiter
        | some (mvarType', transformer) =>
-         let key' := mkTableKey cNode.mctx mvarType'
+         let key' ← withMCtx cNode.mctx <| mkTableKey mvarType'
          match (← findEntry? key') with
          | none =>
            let (mctx', mvar') ← withMCtx cNode.mctx do
@@ -577,10 +583,9 @@ def main (type : Expr) (maxResultSize : Nat) : MetaM (Option AbstractMVarsResult
   withCurrHeartbeats <| traceCtx `Meta.synthInstance do
      trace[Meta.synthInstance] "main goal {type}"
      let mvar ← mkFreshExprMVar type
-     let mctx ← getMCtx
-     let key    := mkTableKey mctx type
+     let key  ← mkTableKey type
      let action : SynthM (Option AbstractMVarsResult) := do
-       newSubgoal mctx key mvar Waiter.root
+       newSubgoal (← getMCtx) key mvar Waiter.root
        synth
      try
        action.run { maxResultSize := maxResultSize, maxHeartbeats := getMaxHeartbeats (← getOptions) } |>.run' {}
@@ -639,7 +644,7 @@ private partial def preprocessArgs (type : Expr) (i : Nat) (args : Array Expr) :
 private def preprocessOutParam (type : Expr) : MetaM Expr :=
   forallTelescope type fun xs typeBody => do
     match typeBody.getAppFn with
-    | c@(Expr.const constName _ _) =>
+    | c@(Expr.const constName _) =>
       let env ← getEnv
       if !hasOutParams env constName then
         return type
@@ -685,7 +690,10 @@ def synthInstance? (type : Expr) (maxResultSize? : Option Nat := none) : MetaM (
           let (_, _, result) ← openAbstractMVarsResult result
           trace[Meta.synthInstance] "result {result}"
           let resultType ← inferType result
-          if (← withDefault <| isDefEq type resultType) then
+          /- Output parameters of local instances may be marked as `syntheticOpaque` by the application-elaborator.
+             We use `withAssignableSyntheticOpaque` to make sure this kind of parameter can be assigned by the following `isDefEq`.
+             TODO: rewrite this check to avoid `withAssignableSyntheticOpaque`. -/
+          if (← withDefault <| withAssignableSyntheticOpaque <| isDefEq type resultType) then
             let result ← instantiateMVars result
             /- We use `check` to propogate universe constraints implied by the `result`.
                Recall that we use `ignoreLevelMVarDepth := true` which allows universe metavariables in the current depth to be assigned,

@@ -69,13 +69,13 @@ def moveToHiddeProp (fvarId : FVarId) : M Unit := do
    Recall that hiddenInaccessibleProps are visible, only their names are hidden -/
 def hasVisibleDep (localDecl : LocalDecl) : M Bool := do
   let s ← get
-  return (← getMCtx).findLocalDeclDependsOn localDecl (!s.hiddenInaccessible.contains ·)
+  findLocalDeclDependsOn localDecl (!s.hiddenInaccessible.contains ·)
 
 /- Return true if the given local declaration has a "nonvisible dependency", that is, it contains
    a free variable that is `hiddenInaccessible` or `hiddenInaccessibleProp` -/
 def hasInaccessibleNameDep (localDecl : LocalDecl) : M Bool := do
   let s ← get
-  return (← getMCtx).findLocalDeclDependsOn localDecl fun fvarId =>
+  findLocalDeclDependsOn localDecl fun fvarId =>
     s.hiddenInaccessible.contains fvarId || s.hiddenInaccessibleProp.contains fvarId
 
 /- If `e` is visible, then any inaccessible in `e` marked as hidden should be unmarked. -/
@@ -89,10 +89,10 @@ where
         | Expr.forallE _ d b _   => visit d; visit b
         | Expr.lam _ d b _       => visit d; visit b
         | Expr.letE _ t v b _    => visit t; visit v; visit b
-        | Expr.app f a _         => visit f; visit a
-        | Expr.mdata _ b _       => visit b
-        | Expr.proj _ _ b _      => visit b
-        | Expr.fvar fvarId _     => if (← isMarked fvarId) then unmark fvarId
+        | Expr.app f a           => visit f; visit a
+        | Expr.mdata _ b         => visit b
+        | Expr.proj _ _ b        => visit b
+        | Expr.fvar fvarId       => if (← isMarked fvarId) then unmark fvarId
         | _                      => pure ()
 
 def fixpointStep : M Unit := do

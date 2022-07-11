@@ -197,13 +197,13 @@ instance : LawfulBEq Bool where
   eq_of_beq {a b} h := by cases a <;> cases b <;> first | rfl | contradiction
   rfl {a} := by cases a <;> decide
 
-instance : LawfulBEq Char where
-  eq_of_beq h := of_decide_eq_true h
-  rfl {a} := of_decide_eq_self_eq_true a
+instance [DecidableEq α] : LawfulBEq α where
+  eq_of_beq := of_decide_eq_true
+  rfl := of_decide_eq_self_eq_true _
 
-instance : LawfulBEq String where
-  eq_of_beq h := of_decide_eq_true h
-  rfl {a} := of_decide_eq_self_eq_true a
+instance : LawfulBEq Char := inferInstance
+
+instance : LawfulBEq String := inferInstance
 
 /- Logical connectives an equality -/
 
@@ -356,6 +356,9 @@ theorem Iff.symm (h : a ↔ b) : b ↔ a :=
 theorem Iff.comm : (a ↔ b) ↔ (b ↔ a) :=
   Iff.intro Iff.symm Iff.symm
 
+theorem And.comm : a ∧ b ↔ b ∧ a := by
+  constructor <;> intro ⟨h₁, h₂⟩ <;> exact ⟨h₂, h₁⟩
+
 /- Exists -/
 
 theorem Exists.elim {α : Sort u} {p : α → Prop} {b : Prop}
@@ -380,13 +383,13 @@ theorem decide_false_eq_false (h : Decidable False) : @decide False h = false :=
   decide p (h := d)
 
 theorem toBoolUsing_eq_true {p : Prop} (d : Decidable p) (h : p) : toBoolUsing d = true :=
-  decide_eq_true (s := d) h
+  decide_eq_true (inst := d) h
 
 theorem ofBoolUsing_eq_true {p : Prop} {d : Decidable p} (h : toBoolUsing d = true) : p :=
-  of_decide_eq_true (s := d) h
+  of_decide_eq_true (inst := d) h
 
 theorem ofBoolUsing_eq_false {p : Prop} {d : Decidable p} (h : toBoolUsing d = false) : ¬ p :=
-  of_decide_eq_false (s := d) h
+  of_decide_eq_false (inst := d) h
 
 instance : Decidable True :=
   isTrue trivial
@@ -735,6 +738,9 @@ gen_injective_theorems% Except
 gen_injective_theorems% EStateM.Result
 gen_injective_theorems% Lean.Name
 gen_injective_theorems% Lean.Syntax
+
+@[simp] theorem beq_iff_eq [BEq α] [LawfulBEq α] (a b : α) : a == b ↔ a = b :=
+  ⟨eq_of_beq, by intro h; subst h; exact LawfulBEq.rfl⟩
 
 /- Quotients -/
 

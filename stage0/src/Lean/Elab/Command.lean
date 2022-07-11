@@ -190,7 +190,7 @@ instance : MonadLog CommandElabM where
     let msg := { msg with data := MessageData.withNamingContext { currNamespace := currNamespace, openDecls := openDecls } msg.data }
     modify fun s => { s with messages := s.messages.add msg }
 
-def runLinters (stx : Syntax) : CommandElabM Unit := do
+def runLinters (stx : Syntax) : CommandElabM Unit := do profileitM Exception "linting" (← getOptions) do
   let linters ← lintersRef.get
   unless linters.isEmpty do
     for linter in linters do
@@ -241,7 +241,8 @@ private def elabCommandUsing (s : State) (stx : Syntax) : List (KeyedDeclsAttrib
 
 /- Elaborate `x` with `stx` on the macro stack -/
 def withMacroExpansion {α} (beforeStx afterStx : Syntax) (x : CommandElabM α) : CommandElabM α :=
-  withReader (fun ctx => { ctx with macroStack := { before := beforeStx, after := afterStx } :: ctx.macroStack }) x
+  withInfoContext (mkInfo := pure <| .ofMacroExpansionInfo { stx := beforeStx, output := afterStx, lctx := .empty }) do
+    withReader (fun ctx => { ctx with macroStack := { before := beforeStx, after := afterStx } :: ctx.macroStack }) x
 
 instance : MonadMacroAdapter CommandElabM where
   getCurrMacroScope := getCurrMacroScope
