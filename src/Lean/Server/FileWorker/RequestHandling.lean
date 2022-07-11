@@ -211,7 +211,7 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
   withWaitFindSnap doc (fun s => s.endPos >= hoverPos)
     (notFoundX := pure none) fun snap => do
       let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx
-        (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos))
+        (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos text))
       return some ret
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)
