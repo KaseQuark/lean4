@@ -112,12 +112,19 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
       | Except.ok e => e
     return { expr := retexpr, val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
 
+
+def reprint! (stx : Syntax) : String :=
+  match stx.reprint with
+    | some x => x
+    | none =>  panic! "Could not reprint syntax"
+
+
 structure LocateReturn where
   pathBeforeConv : List Nat
   pathAfterConv : List Nat
 deriving Inhabited
 
-private partial def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn := Id.run do
+private def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn := Id.run do
   let mut t := tParam
   let mut path := []
   let mut rangeList := []
@@ -145,16 +152,12 @@ private partial def locate (tParam : Syntax.Traverser) (pos : String.Pos) : Loca
   -- go back up from found location to the first `conv` we find
   t := t.up
   let mut pathAfterConv := []
-  let mut firstArg := match Syntax.reprint t.cur.getArgs[0]! with
-    | some x => x
-    | none =>  panic! "how did this happen?"
+  let mut firstArg := reprint! t.cur.getArgs[0]!
   pathAfterConv := path.head!::pathAfterConv
   path := path.tail!
   while !("conv".isPrefixOf firstArg) do
     t := t.up
-    firstArg := match Syntax.reprint t.cur.getArgs[0]! with
-      | some x => x
-      | none =>  panic! "how did this happen?"
+    firstArg :=reprint! t.cur.getArgs[0]!
     pathAfterConv := path.head!::pathAfterConv
     path := path.tail!
 
@@ -175,7 +178,7 @@ private partial def locate (tParam : Syntax.Traverser) (pos : String.Pos) : Loca
 
   return {pathBeforeConv := path.reverse, pathAfterConv := pathAfterConv }
 
-private partial def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : Syntax := Id.run do
+private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : Syntax := Id.run do
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -196,9 +199,7 @@ private partial def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat)
 
     --get whitespace and make new node
     let argNr := pathBeforeConv'.head! - 1
-    let prevArg := match Syntax.reprint t.cur.getArgs[argNr]! with
-      | some x => x
-      | none =>  panic! "Syntax could not be reprinted"
+    let prevArg := reprint! t.cur.getArgs[argNr]!
     let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
     --whitespace is extended by two spaces to get correct indentation level
     let mut whitespace := "  "
@@ -237,21 +238,34 @@ private partial def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat)
     let argNr := match pathAfterConv.head! with
       | 0 => 0
       | x => x - 1
-    let prevArg := match Syntax.reprint t.cur.getArgs[argNr]! with
-      | some x => x
-      | none =>  panic! "Syntax could not be reprinted"
+    let prevArg := reprint! t.cur.getArgs[argNr]!
     let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
     let mut whitespace := ""
     while "  ".isPrefixOf whitespaceLine do
       whitespace := whitespace ++ "  "
       whitespaceLine := whitespaceLine.drop 2
-    -- if we are inserting after the last element of the conv block, we need to add an additional level of indentation in front of our tactic,
-    -- and remove one level at the end.
-    let mut additionalWhitespace := ""
-    if (pathAfterConv.head! + 1) == t.cur.getArgs.size then
-      additionalWhitespace := "  "
-      whitespace := whitespace.drop 2
-    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (additionalWhitespace ++ value ++ "\n" ++ whitespace)
+    -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
+    -- and remove some at the end.
+    let mut frontWhitespace := ""
+    if pathAfterConv.head! == t.cur.getArgs.size - 1 then
+      let mut secondWhitespace := ""
+      let lastArg := reprint! t.cur.getArgs[ t.cur.getArgs.size - 1]!
+      let mut secondWhitespaceLine := (lastArg.splitOn "\n").reverse.head!
+      while "  ".isPrefixOf secondWhitespaceLine do
+        secondWhitespace := secondWhitespace ++ "  "
+        secondWhitespaceLine := secondWhitespaceLine.drop 2
+      let numOfWhitespace := whitespace.length - secondWhitespace.length
+      for _ in [:numOfWhitespace] do
+        frontWhitespace := frontWhitespace ++ " "
+        whitespace := whitespace.drop 1
+      -- in this case, we only have one tactic in the conv block, so `numOfWhitespace == 0`, but we still need to add indentation
+      if t.cur.getArgs.size == 1 then
+        for _ in [:whitespace.length] do
+        frontWhitespace := frontWhitespace ++ " "
+
+
+
+    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ value ++ "\n" ++ whitespace)
     -- add new node to syntax and move to the very top
     let argList := t.cur.getArgs.toList
     let newArgList := List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
@@ -261,7 +275,7 @@ private partial def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat)
 
     return t.cur
 
-def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p: String.Pos) : MetaM ConvZoomCommands := do
+def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p: String.Pos) (text: FileMap): MetaM ConvZoomCommands := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
   let mut expr := (getExprFromCodeWithInfos goalParam.type).head!
   let mut ret := ""
@@ -285,12 +299,20 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
   let traverser := Syntax.Traverser.fromSyntax stx
   let retval := (locate traverser p)
   let inserted := syntaxInsert stx retval.pathBeforeConv retval.pathAfterConv enterval
-  let val := match Syntax.reprint inserted with
-    | some x => x
-    | none => "Syntax could not be reprinted"
+  let val := reprint! inserted
+
+  let mut range := match stx.getRange? with
+        | some x => x
+        | none => panic! "could not get range"
+
+  -- insert new syntax into document
+  let part1 := text.source.take range.start.byteIdx
+  let part2 := text.source.drop (range.stop.byteIdx + 2)
+  let newsrc := part1 ++ val ++ part2
 
   ret := ret ++ "--Result after inserting enter:\n"
-  ret := ret ++ "/-\n" ++ val ++ "\n-/"
+  ret := ret ++ "/-\n" ++ newsrc ++ "\n-/"
+
   return { commands? := ret }
 
 end Lean.Widget
