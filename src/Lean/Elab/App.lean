@@ -83,28 +83,80 @@ def synthesizeAppInstMVars (instMVars : Array MVarId) (app : Expr) : TermElabM U
 
 namespace ElabAppArgs
 
+structure Context where
+  /--
+   `true` if `..` was used
+  -/
+  ellipsis      : Bool  --
+  /--
+   `true` if `@` modifier was used
+  -/
+  explicit      : Bool
+  /--
+    If the result type of an application is the `outParam` of some local instance, then special support may be needed
+    because type class resolution interacts poorly with coercions in this kind of situation.
+    This flag enables the special support.
+
+    The idea is quite simple, if the result type is the `outParam` of some local instance, we simply
+    execute `synthesizeSyntheticMVarsUsingDefault`. We added this feature to make sure examples as follows
+    are correctly elaborated.
+    ```lean
+    class GetElem (Cont : Type u) (Idx : Type v) (Elem : outParam (Type w)) where
+      getElem (xs : Cont) (i : Idx) : Elem
+
+    export GetElem (getElem)
+
+    instance : GetElem (Array α) Nat α where
+      getElem xs i := xs.get ⟨i, sorry⟩
+
+    opaque f : Option Bool → Bool
+    opaque g : Bool → Bool
+
+    def bad (xs : Array Bool) : Bool :=
+      let x := getElem xs 0
+      f x && g x
+    ```
+    Without the special support, Lean fails at `g x` saying `x` has type `Option Bool` but is expected to have type `Bool`.
+    From the users point of view this is a bug, since `let x := getElem xs 0` clearly constraints `x` to be `Bool`, but
+    we only obtain this information after we apply the `OfNat` default instance for `0`.
+
+    Before converging to this solution, we have tried to create a "coercion placeholder" when `resultIsOutParamSupport = true`,
+    but it did not work well in practice. For example, it failed in the example above.
+  -/
+  resultIsOutParamSupport : Bool
+
 /- Auxiliary structure for elaborating the application `f args namedArgs`. -/
 structure State where
-  explicit          : Bool -- true if `@` modifier was used
-  f                 : Expr
-  fType             : Expr
-  args              : List Arg            -- remaining regular arguments
-  namedArgs         : List NamedArg       -- remaining named arguments to be processed
-  ellipsis          : Bool := false
-  expectedType?     : Option Expr
-  etaArgs           : Array Expr   := #[]
-  toSetErrorCtx     : Array MVarId := #[] -- metavariables that we need the set the error context using the application being built
-  instMVars         : Array MVarId := #[] -- metavariables for the instance implicit arguments that have already been processed
-  -- The following field is used to implement the `propagateExpectedType` heuristic.
-  propagateExpected : Bool  -- true when expectedType has not been propagated yet
+  f                    : Expr
+  fType                : Expr
+  /-- Remaining regular arguments. -/
+  args                 : List Arg
+  /-- remaining named arguments to be processed. -/
+  namedArgs            : List NamedArg
+  expectedType?        : Option Expr
+  etaArgs              : Array Expr   := #[]
+  /-- Metavariables that we need the set the error context using the application being built. -/
+  toSetErrorCtx        : Array MVarId := #[]
+  /-- Metavariables for the instance implicit arguments that have already been processed. -/
+  instMVars            : Array MVarId := #[]
+  /--
+    The following field is used to implement the `propagateExpectedType` heuristic.
+    It is set to `true` true when `expectedType` still has to be propagated.
+  -/
+  propagateExpected    : Bool
+  /--
+    If the result type may be the `outParam` of some local instance.
+    See comment at `Context.resultIsOutParamSupport`
+   -/
+  resultTypeOutParam?  : Option MVarId := none
 
-abbrev M := StateRefT State TermElabM
+abbrev M := ReaderT Context (StateRefT State TermElabM)
 
-/- Add the given metavariable to the collection of metavariables associated with instance-implicit arguments. -/
+/-- Add the given metavariable to the collection of metavariables associated with instance-implicit arguments. -/
 private def addInstMVar (mvarId : MVarId) : M Unit :=
   modify fun s => { s with instMVars := s.instMVars.push mvarId }
 
-/-
+/--
   Try to synthesize metavariables are `instMVars` using type class resolution.
   The ones that cannot be synthesized yet are registered.
   Remark: we use this method before trying to apply coercions to function. -/
@@ -112,9 +164,9 @@ def synthesizeAppInstMVars : M Unit := do
   let s ← get
   let instMVars := s.instMVars
   modify fun s => { s with instMVars := #[] }
-  Lean.Elab.Term.synthesizeAppInstMVars instMVars s.f
+  Term.synthesizeAppInstMVars instMVars s.f
 
-/- fType may become a forallE after we synthesize pending metavariables. -/
+/-- fType may become a forallE after we synthesize pending metavariables. -/
 private def synthesizePendingAndNormalizeFunType : M Unit := do
   synthesizeAppInstMVars
   synthesizeSyntheticMVars
@@ -136,27 +188,27 @@ private def synthesizePendingAndNormalizeFunType : M Unit := do
           throwInvalidNamedArg namedArg none
       throwError "function expected at{indentExpr s.f}\nterm has type{indentExpr fType}"
 
-/- Normalize and return the function type. -/
+/-- Normalize and return the function type. -/
 private def normalizeFunType : M Expr := do
   let s ← get
   let fType ← whnfForall s.fType
   modify fun s => { s with fType }
   return fType
 
-/- Return the binder name at `fType`. This method assumes `fType` is a function type. -/
+/-- Return the binder name at `fType`. This method assumes `fType` is a function type. -/
 private def getBindingName : M Name := return (← get).fType.bindingName!
 
-/- Return the next argument expected type. This method assumes `fType` is a function type. -/
+/-- Return the next argument expected type. This method assumes `fType` is a function type. -/
 private def getArgExpectedType : M Expr := return (← get).fType.bindingDomain!
 
 def eraseNamedArgCore (namedArgs : List NamedArg) (binderName : Name) : List NamedArg :=
   namedArgs.filter (·.name != binderName)
 
-/- Remove named argument with name `binderName` from `namedArgs`. -/
+/-- Remove named argument with name `binderName` from `namedArgs`. -/
 def eraseNamedArg (binderName : Name) : M Unit :=
   modify fun s => { s with namedArgs := eraseNamedArgCore s.namedArgs binderName }
 
-/-
+/--
   Add a new argument to the result. That is, `f := f arg`, update `fType`.
   This method assumes `fType` is a function type. -/
 private def addNewArg (argName : Name) (arg : Expr) : M Unit := do
@@ -166,7 +218,7 @@ private def addNewArg (argName : Name) (arg : Expr) : M Unit := do
     if let some mvarErrorInfo ← getMVarErrorInfo? mvarId then
       registerMVarErrorInfo { mvarErrorInfo with argName? := argName }
 
-/-
+/--
   Elaborate the given `Arg` and add it to the result. See `addNewArg`.
   Recall that, `Arg` may be wrapping an already elaborated `Expr`. -/
 private def elabAndAddNewArg (argName : Name) (arg : Arg) : M Unit := do
@@ -181,27 +233,27 @@ private def elabAndAddNewArg (argName : Name) (arg : Arg) : M Unit := do
     let arg ← withRef stx <| ensureArgType s.f val expectedType
     addNewArg argName arg
 
-/- Return true if the given type contains `OptParam` or `AutoParams` -/
+/-- Return true if the given type contains `OptParam` or `AutoParams` -/
 private def hasOptAutoParams (type : Expr) : M Bool := do
   forallTelescopeReducing type fun xs _ =>
     xs.anyM fun x => do
       let xType ← inferType x
       return xType.getOptParamDefault?.isSome || xType.getAutoParamTactic?.isSome
 
-/- Return true if `fType` contains `OptParam` or `AutoParams` -/
+/-- Return true if `fType` contains `OptParam` or `AutoParams` -/
 private def fTypeHasOptAutoParams : M Bool := do
   hasOptAutoParams (← get).fType
 
-/- Auxiliary function for retrieving the resulting type of a function application.
+/--
+   Auxiliary function for retrieving the resulting type of a function application.
    See `propagateExpectedType`.
-
    Remark: `(explicit : Bool) == true` when `@` modifier is used. -/
 private partial def getForallBody (explicit : Bool) : Nat → List NamedArg → Expr → Option Expr
-  | i, namedArgs, type@(Expr.forallE n d b c) =>
+  | i, namedArgs, type@(Expr.forallE n d b bi) =>
     match namedArgs.find? fun (namedArg : NamedArg) => namedArg.name == n with
     | some _ => getForallBody explicit i (eraseNamedArgCore namedArgs n) b
     | none =>
-      if !explicit && !c.binderInfo.isExplicit then
+      if !explicit && !bi.isExplicit then
         getForallBody explicit i namedArgs b
       else if i > 0 then
         getForallBody explicit (i-1) namedArgs b
@@ -221,7 +273,7 @@ private def shouldPropagateExpectedTypeFor (nextArg : Arg) : Bool :=
     stx.getKind != ``Lean.Parser.Term.syntheticHole &&
     stx.getKind != ``Lean.Parser.Term.byTactic
 
-/-
+/--
   Auxiliary method for propagating the expected type. We call it as soon as we find the first explict
   argument. The goal is to propagate the expected type in applications of functions such as
   ```lean
@@ -294,7 +346,7 @@ private def propagateExpectedType (arg : Arg) : M Unit := do
         else
           let numRemainingArgs := s.args.length
           trace[Elab.app.propagateExpectedType] "etaArgs.size: {s.etaArgs.size}, numRemainingArgs: {numRemainingArgs}, fType: {s.fType}"
-          match getForallBody s.explicit numRemainingArgs s.namedArgs s.fType with
+          match getForallBody (← read).explicit numRemainingArgs s.namedArgs s.fType with
           | none           => pure ()
           | some fTypeBody =>
             unless fTypeBody.hasLooseBVars do
@@ -304,8 +356,7 @@ private def propagateExpectedType (arg : Arg) : M Unit := do
                   /- Note that we only set `propagateExpected := false` when propagation has succeeded. -/
                   modify fun s => { s with propagateExpected := false }
 
-
-/- This method execute after all application arguments have been processed. -/
+/-- This method execute after all application arguments have been processed. -/
 private def finalize : M Expr := do
   let s ← get
   let mut e := s.f
@@ -323,16 +374,31 @@ private def finalize : M Expr := do
   -/
   let eType ← inferType e
   trace[Elab.app.finalize] "after etaArgs, {e} : {eType}"
-  match s.expectedType? with
-  | none              => pure ()
-  | some expectedType =>
-     trace[Elab.app.finalize] "expected type: {expectedType}"
-     -- Try to propagate expected type. Ignore if types are not definitionally equal, caller must handle it.
-     discard <| isDefEq expectedType eType
+  /- Recall that `resultTypeOutParam? = some mvarId` if the function result type is the output parameter
+     of a local instance. The value of this parameter may be inferable using other arguments. For example,
+     suppose we have
+     ```lean
+     def add_one {X} [Trait X] [One (Trait.R X)] [HAdd X (Trait.R X) X] (x : X) : X := x + (One.one : (Trait.R X))
+     ```
+     from test `948.lean`. There are multiple ways to infer `X`, and we don't want to mark it as `syntheticOpaque`.
+  -/
+  if let some outParamMVarId := s.resultTypeOutParam? then
+    synthesizeAppInstMVars
+    /- If `eType != mkMVar outParamMVarId`, then the
+       function is partially applied, and we do not apply default instances. -/
+    if !(← isExprMVarAssigned outParamMVarId) && eType.isMVar && eType.mvarId! == outParamMVarId then
+      synthesizeSyntheticMVarsUsingDefault
+      return e
+    else
+      return e
+  if let some expectedType := s.expectedType? then
+    -- Try to propagate expected type. Ignore if types are not definitionally equal, caller must handle it.
+    trace[Elab.app.finalize] "expected type: {expectedType}"
+    discard <| isDefEq expectedType eType
   synthesizeAppInstMVars
   return e
 
-/- Return true if there is a named argument that depends on the next argument. -/
+/-- Return `true` if there is a named argument that depends on the next argument. -/
 private def anyNamedArgDependsOnCurrent : M Bool := do
   let s ← get
   if s.namedArgs.isEmpty then
@@ -348,17 +414,87 @@ private def anyNamedArgDependsOnCurrent : M Bool := do
       return false
 
 
-/- Return true if there are regular or named arguments to be processed. -/
+/-- Return `true` if there are regular or named arguments to be processed. -/
 private def hasArgsToProcess : M Bool := do
   let s ← get
   return !s.args.isEmpty || !s.namedArgs.isEmpty
 
-/- Return true if the next argument at `args` is of the form `_` -/
+/-- Return `true` if the next argument at `args` is of the form `_` -/
 private def isNextArgHole : M Bool := do
   match (← get).args with
   | Arg.stx (Syntax.node _ ``Lean.Parser.Term.hole _) :: _ => pure true
   | _ => pure false
 
+/--
+  Return `true` if the next argument to be processed is the outparam of a local instance, and it the result type
+  of the function.
+
+  For example, suppose we have the class
+  ```lean
+  class Get (Cont : Type u) (Idx : Type v) (Elem : outParam (Type w)) where
+    get (xs : Cont) (i : Idx) : Elem
+  ```
+  And the current value of `fType` is
+  ```
+  {Cont : Type u_1} → {Idx : Type u_2} → {Elem : Type u_3} → [self : Get Cont Idx Elem] → Cont → Idx → Elem
+  ```
+  then the result returned by this method is `false` since `Cont` is not the output param of any local instance.
+  Now assume `fType` is
+  ```
+  {Elem : Type u_3} → [self : Get Cont Idx Elem] → Cont → Idx → Elem
+  ```
+  then, the method returns `true` because `Elem` is an output parameter for the local instance `[self : Get Cont Idx Elem]`.
+
+  Remark: if `coeAtOutParam` is `false`, this method returns `false`.
+-/
+private partial def isNextOutParamOfLocalInstanceAndResult : M Bool := do
+  if !(← read).resultIsOutParamSupport then
+    return false
+  let type := (← get).fType.bindingBody!
+  unless isResultType type 0 do
+    return false
+  if (← hasLocalInstaceWithOutParams type) then
+    let x := mkFVar (← mkFreshFVarId)
+    isOutParamOfLocalInstance x (type.instantiate1 x)
+  else
+    return false
+where
+  isResultType (type : Expr) (i : Nat) : Bool :=
+    match type with
+    | .forallE _ _ b _ => isResultType b (i + 1)
+    | .bvar idx        => idx == i
+    | _                => false
+
+  /- (quick filter) Return true if `type` constains a binder `[C ...]` where `C` is a class containing outparams. -/
+  hasLocalInstaceWithOutParams (type : Expr) : CoreM Bool := do
+    let .forallE _ d b bi := type | return false
+    if bi.isInstImplicit then
+      if let .const declName .. := d.getAppFn then
+        if hasOutParams (← getEnv) declName then
+          return true
+    hasLocalInstaceWithOutParams b
+
+  isOutParamOfLocalInstance (x : Expr) (type : Expr) : MetaM Bool := do
+    let .forallE _ d b bi := type | return false
+    if bi.isInstImplicit then
+      if let .const declName .. := d.getAppFn then
+        if hasOutParams (← getEnv) declName then
+          let cType ← inferType d.getAppFn
+          if (← isOutParamOf x 0 d.getAppArgs cType) then
+            return true
+    isOutParamOfLocalInstance x b
+
+  isOutParamOf (x : Expr) (i : Nat) (args : Array Expr) (cType : Expr) : MetaM Bool := do
+    if h : i < args.size then
+      match (← whnf cType) with
+      | .forallE _ d b _ =>
+        let arg := args.get ⟨i, h⟩
+        if arg == x && d.isOutParam then
+          return true
+        isOutParamOf x (i+1) args b
+      | _ => return false
+    else
+      return false
 
 mutual
   /-
@@ -374,7 +510,16 @@ mutual
 
   private partial def addImplicitArg (argName : Name) : M Expr := do
     let argType ← getArgExpectedType
-    let arg ← mkFreshExprMVar argType
+    let arg ← if (← isNextOutParamOfLocalInstanceAndResult) then
+      let arg ← mkFreshExprMVar argType
+      /- When the result type is an output parameter, we don't want to propagate the expected type.
+         So, we just mark `propagateExpected := false` to disable it.
+         At `finalize`, we check whether `arg` is still unassigned, if it is, we apply default instances,
+         and try to synthesize pending mvars. -/
+      modify fun s => { s with resultTypeOutParam? := some arg.mvarId!, propagateExpected := false }
+      pure arg
+    else
+      mkFreshExprMVar argType
     modify fun s => { s with toSetErrorCtx := s.toSetErrorCtx.push arg.mvarId! }
     addNewArg argName arg
     main
@@ -383,8 +528,7 @@ mutual
     Process a `fType` of the form `(x : A) → B x`.
     This method assume `fType` is a function type -/
   private partial def processExplictArg (argName : Name) : M Expr := do
-    let s ← get
-    match s.args with
+    match (← get).args with
     | arg::args =>
       propagateExpectedType arg
       modify fun s => { s with args }
@@ -392,9 +536,9 @@ mutual
       main
     | _ =>
       let argType ← getArgExpectedType
-      match s.explicit, argType.getOptParamDefault?, argType.getAutoParamTactic? with
+      match (← read).explicit, argType.getOptParamDefault?, argType.getAutoParamTactic? with
       | false, some defVal, _  => addNewArg argName defVal; main
-      | false, _, some (Expr.const tacticDecl _ _) =>
+      | false, _, some (Expr.const tacticDecl _) =>
         let env ← getEnv
         let opts ← getOptions
         match evalSyntaxConstant env opts tacticDecl with
@@ -409,15 +553,15 @@ mutual
       | false, _, some _ =>
         throwError "invalid autoParam, argument must be a constant"
       | _, _, _ =>
-        if !s.namedArgs.isEmpty then
+        if !(← get).namedArgs.isEmpty then
           if (← anyNamedArgDependsOnCurrent) then
             addImplicitArg argName
           else
             addEtaArg argName
-        else if !s.explicit then
+        else if !(← read).explicit then
           if (← fTypeHasOptAutoParams) then
             addEtaArg argName
-          else if (← get).ellipsis then
+          else if (← read).ellipsis then
             addImplicitArg argName
           else
             finalize
@@ -428,7 +572,7 @@ mutual
     Process a `fType` of the form `{x : A} → B x`.
     This method assume `fType` is a function type -/
   private partial def processImplicitArg (argName : Name) : M Expr := do
-    if (← get).explicit then
+    if (← read).explicit then
       processExplictArg argName
     else
       addImplicitArg argName
@@ -437,7 +581,7 @@ mutual
     Process a `fType` of the form `{{x : A}} → B x`.
     This method assume `fType` is a function type -/
   private partial def processStrictImplicitArg (argName : Name) : M Expr := do
-    if (← get).explicit then
+    if (← read).explicit then
       processExplictArg argName
     else if (← hasArgsToProcess) then
       addImplicitArg argName
@@ -448,7 +592,7 @@ mutual
     Process a `fType` of the form `[x : A] → B x`.
     This method assume `fType` is a function type -/
   private partial def processInstImplicitArg (argName : Name) : M Expr := do
-    if (← get).explicit then
+    if (← read).explicit then
       if (← isNextArgHole) then
         /- Recall that if '@' has been used, and the argument is '_', then we still use type class resolution -/
         let arg ← mkFreshExprMVar (← getArgExpectedType) MetavarKind.synthetic
@@ -499,16 +643,18 @@ private def propagateExpectedTypeFor (f : Expr) : TermElabM Bool :=
   | _ => return true
 
 def elabAppArgs (f : Expr) (namedArgs : Array NamedArg) (args : Array Arg)
-    (expectedType? : Option Expr) (explicit ellipsis : Bool) : TermElabM Expr := do
+    (expectedType? : Option Expr) (explicit ellipsis : Bool) (resultIsOutParamSupport := true) : TermElabM Expr := do
+  -- Coercions must be available to use this flag.
+  -- If `@` is used (i.e., `explicit = true`), we disable `resultIsOutParamSupport`.
+  let resultIsOutParamSupport := ((← getEnv).contains ``Lean.Internal.coeM) && resultIsOutParamSupport && !explicit
   let fType ← inferType f
   let fType ← instantiateMVars fType
   trace[Elab.app.args] "explicit: {explicit}, {f} : {fType}"
   unless namedArgs.isEmpty && args.isEmpty do
     tryPostponeIfMVar fType
-  ElabAppArgs.main.run' {
+  ElabAppArgs.main.run { explicit, ellipsis, resultIsOutParamSupport } |>.run' {
     args := args.toList
-    expectedType? := expectedType?
-    explicit, ellipsis, f, fType
+    expectedType?, f, fType
     namedArgs := namedArgs.toList
     propagateExpected := (← propagateExpectedTypeFor f)
   }
@@ -519,7 +665,6 @@ inductive LValResolution where
   | projIdx  (structName : Name) (idx : Nat)
   | const    (baseStructName : Name) (structName : Name) (constName : Name)
   | localRec (baseName : Name) (fullName : Name) (fvar : Expr)
-  | getOp    (fullName : Name) (idx : Syntax)
 
 private def throwLValError (e : Expr) (eType : Expr) (msg : MessageData) : TermElabM α :=
   throwError "{msg}{indentExpr e}\nhas type{indentExpr eType}"
@@ -603,35 +748,24 @@ private def resolveLValAux (e : Expr) (eType : Expr) (lval : LVal) : TermElabM L
     -- search local context first, then environment
     let searchCtx : Unit → TermElabM LValResolution := fun _ => do
       let fullName := Name.mkStr structName fieldName
-      let currNamespace ← getCurrNamespace
-      let localName := fullName.replacePrefix currNamespace Name.anonymous
-      let lctx ← getLCtx
-      match lctx.findFromUserName? localName with
-      | some localDecl =>
+      for localDecl in (← getLCtx) do
         if localDecl.binderInfo == BinderInfo.auxDecl then
-          /- LVal notation is being used to make a "local" recursive call. -/
-          return LValResolution.localRec structName fullName localDecl.toExpr
-        else
-          searchEnv ()
-      | none => searchEnv ()
+          if let some localDeclFullName := (← read).auxDeclToFullName.find? localDecl.fvarId then
+            if fullName == (privateToUserName? localDeclFullName).getD localDeclFullName then
+              /- LVal notation is being used to make a "local" recursive call. -/
+              return LValResolution.localRec structName fullName localDecl.toExpr
+      searchEnv ()
     if isStructure env structName then
       match findField? env structName (Name.mkSimple fieldName) with
       | some baseStructName => return LValResolution.projFn baseStructName structName (Name.mkSimple fieldName)
       | none                => searchCtx ()
     else
       searchCtx ()
-  | some structName, LVal.getOp _ idx kind =>
-    let env ← getEnv
-    let fullName := Name.mkStr structName kind.opName
-    match env.find? fullName with
-    | some _ => return LValResolution.getOp fullName idx
-    | none   => throwLValError e eType m!"invalid [..] notation because environment does not contain '{fullName}'"
   | none, LVal.fieldName _ _ (some suffix) _ =>
     if e.isConst then
       throwUnknownConstant (e.constName! ++ suffix)
     else
       throwInvalidFieldNotation e eType
-  | _, LVal.getOp .. => throwInvalidFieldNotation e eType
   | _, _ => throwInvalidFieldNotation e eType
 
 /- whnfCore + implicit consumption.
@@ -639,12 +773,12 @@ private def resolveLValAux (e : Expr) (eType : Expr) (lval : LVal) : TermElabM L
 private partial def consumeImplicits (stx : Syntax) (e eType : Expr) (hasArgs : Bool) : TermElabM (Expr × Expr) := do
   let eType ← whnfCore eType
   match eType with
-  | .forallE _ d b c =>
-    if c.binderInfo.isImplicit || (hasArgs && c.binderInfo.isStrictImplicit) then
+  | .forallE _ d b bi =>
+    if bi.isImplicit || (hasArgs && bi.isStrictImplicit) then
       let mvar ← mkFreshExprMVar d
       registerMVarErrorHoleInfo mvar.mvarId! stx
       consumeImplicits stx (mkApp e mvar) (b.instantiate1 mvar) hasArgs
-    else if c.binderInfo.isInstImplicit then
+    else if bi.isInstImplicit then
       let mvar ← mkInstMVar d
       let r := mkApp e mvar
       registerMVarErrorImplicitArgInfo mvar.mvarId! stx r
@@ -658,6 +792,10 @@ private partial def consumeImplicits (stx : Syntax) (e eType : Expr) (hasArgs : 
 private partial def resolveLValLoop (lval : LVal) (e eType : Expr) (previousExceptions : Array Exception) (hasArgs : Bool) : TermElabM (Expr × LValResolution) := do
   let (e, eType) ← consumeImplicits lval.getRef e eType hasArgs
   tryPostponeIfMVar eType
+  /- If `eType` is still a metavariable application, we try to apply default instances to "unblock" it. -/
+  if (← isMVarApp eType) then
+    synthesizeSyntheticMVarsUsingDefault
+  let eType ← instantiateMVars eType
   try
     let lvalRes ← resolveLValAux e eType lval
     return (e, lvalRes)
@@ -783,17 +921,6 @@ private def elabAppLValsAux (namedArgs : Array NamedArg) (args : Array Arg) (exp
       else
         let f ← elabAppArgs fvar #[] #[Arg.expr f] (expectedType? := none) (explicit := false) (ellipsis := false)
         loop f lvals
-    | LValResolution.getOp fullName idx =>
-      let getOpFn ← mkConst fullName
-      let getOpFn ← addTermInfo lval.getRef getOpFn
-      if lvals.isEmpty then
-        let namedArgs ← addNamedArg namedArgs { name := `self, val := Arg.expr f }
-        let namedArgs ← addNamedArg namedArgs { name := `idx,  val := Arg.stx idx }
-        elabAppArgs getOpFn namedArgs args expectedType? explicit ellipsis
-      else
-        let f ← elabAppArgs getOpFn #[{ name := `self, val := Arg.expr f }, { name := `idx, val := Arg.stx idx }]
-                            #[] (expectedType? := none) (explicit := false) (ellipsis := false)
-        loop f lvals
   loop f lvals
 
 private def elabAppLVals (f : Expr) (lvals : List LVal) (namedArgs : Array NamedArg) (args : Array Arg)
@@ -899,9 +1026,6 @@ private partial def elabAppFn (f : Syntax) (lvals : List LVal) (namedArgs : Arra
     | `($e |>.$idx:fieldIdx) => elabFieldIdx e idx
     | `($(e).$field:ident) => elabFieldName e field
     | `($e |>.$field:ident) => elabFieldName e field
-    | `($e[%$bracket $idx]) => elabAppFn e (LVal.getOp bracket idx .safe :: lvals) namedArgs args expectedType? explicit ellipsis overloaded acc
-    | `($e[%$bracket $idx]!) => elabAppFn e (LVal.getOp bracket idx .panic :: lvals) namedArgs args expectedType? explicit ellipsis overloaded acc
-    | `($e[%$bracket $idx]?) => elabAppFn e (LVal.getOp bracket idx .optional :: lvals) namedArgs args expectedType? explicit ellipsis overloaded acc
     | `($_:ident@$_:term) =>
       throwError "unexpected occurrence of named pattern"
     | `($id:ident) => do
@@ -1033,9 +1157,6 @@ private def elabAtom : TermElab := fun stx expectedType? => do
 
 @[builtinTermElab choice] def elabChoice : TermElab := elabAtom
 @[builtinTermElab proj] def elabProj : TermElab := elabAtom
-@[builtinTermElab arrayRef] def elabArrayRef : TermElab := elabAtom
-@[builtinTermElab arrayRefOpt] def elabArrayRefOpt : TermElab := elabAtom
-@[builtinTermElab arrayRefPanic] def elabArrayRefPanic : TermElab := elabAtom
 
 builtin_initialize
   registerTraceClass `Elab.app

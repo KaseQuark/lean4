@@ -166,13 +166,17 @@ end Tactic
 namespace Term
 
 structure Context where
-  declName?       : Option Name     := none
-  macroStack      : MacroStack      := []
+  declName? : Option Name := none
+  /--
+    Map `.auxDecl` local declarations used to encode recursive declarations to their full-names.
+  -/
+  auxDeclToFullName : FVarIdMap Name  := {}
+  macroStack        : MacroStack      := []
   /--
      When `mayPostpone == true`, an elaboration function may interrupt its execution by throwing `Exception.postpone`.
      The function `elabTerm` catches this exception and creates fresh synthetic metavariable `?m`, stores `?m` in
      the list of pending synthetic metavariables, and returns `?m`. -/
-  mayPostpone     : Bool            := true
+  mayPostpone : Bool := true
   /--
      When `errToSorry` is set to true, the method `elabTerm` catches
      exceptions and converts them into synthetic `sorry`s.
@@ -181,7 +185,7 @@ structure Context where
      `errToSorry` remains `false` for all elaboration functions invoked by `F`.
      That is, it is safe to transition `errToSorry` from `true` to `false`, but
      we must not set `errToSorry` to `true` when it is currently set to `false`. -/
-  errToSorry      : Bool            := true
+  errToSorry : Bool := true
   /--
      When `autoBoundImplicit` is set to true, instead of producing
      an "unknown identifier" error for unbound variables, we generate an
@@ -368,33 +372,21 @@ opaque mkTermElabAttribute : IO (KeyedDeclsAttribute TermElab)
 
 builtin_initialize termElabAttribute : KeyedDeclsAttribute TermElab ← mkTermElabAttribute
 
-inductive GetOpKind where
-  | /-- `a[i]` -/  safe
-  | /-- `a[i]!` -/ panic
-  | /-- `a[i]?` -/ optional
-
-def GetOpKind.opName : GetOpKind → String
-  | safe => "getOp"
-  | panic => "getOp!"
-  | optional => "getOp?"
-
 /--
   Auxiliary datatatype for presenting a Lean lvalue modifier.
   We represent a unelaborated lvalue as a `Syntax` (or `Expr`) and `List LVal`.
-  Example: `a.foo[i].1` is represented as the `Syntax` `a` and the list
-  `[LVal.fieldName "foo", LVal.getOp i, LVal.fieldIdx 1]`.
-  Recall that the notation `a[i]` is not just for accessing arrays in Lean. -/
+  Example: `a.foo.1` is represented as the `Syntax` `a` and the list
+  `[LVal.fieldName "foo", LVal.fieldIdx 1]`.
+-/
 inductive LVal where
   | fieldIdx  (ref : Syntax) (i : Nat)
     /- Field `suffix?` is for producing better error messages because `x.y` may be a field access or a hierachical/composite name.
        `ref` is the syntax object representing the field. `targetStx` is the target object being accessed. -/
   | fieldName (ref : Syntax) (name : String) (suffix? : Option Name) (targetStx : Syntax)
-  | getOp     (ref : Syntax) (idx : Syntax) (getOpKind : GetOpKind)
 
 def LVal.getRef : LVal → Syntax
   | LVal.fieldIdx ref _    => ref
   | LVal.fieldName ref ..  => ref
-  | LVal.getOp ref ..      => ref
 
 def LVal.isFieldName : LVal → Bool
   | LVal.fieldName .. => true
@@ -404,12 +396,6 @@ instance : ToString LVal where
   toString
     | LVal.fieldIdx _ i     => toString i
     | LVal.fieldName _ n .. => n
-    | LVal.getOp _ idx k    =>
-      let r := "[" ++ toString idx ++ "]"
-      match k with
-      | .safe => r
-      | .panic => r ++ "!"
-      | .optional => r ++ "?"
 
 /-- Return the name of the declaration being elaborated if available. -/
 def getDeclName? : TermElabM (Option Name) := return (← read).declName?
@@ -431,6 +417,15 @@ def withLevelNames (levelNames : List Name) (x : TermElabM α) : TermElabM α :=
   let levelNamesSaved ← getLevelNames
   setLevelNames levelNames
   try x finally setLevelNames levelNamesSaved
+
+/--
+  Declare an auxiliary local declaration `shortDeclName : type` for elaborating recursive declaration `declName`,
+  update the mapping `auxDeclToFullName`, and then execute `k`.
+-/
+def withAuxDecl (shortDeclName : Name) (type : Expr) (declName : Name) (k : Expr → TermElabM α) : TermElabM α :=
+  withLocalDecl shortDeclName BinderInfo.auxDecl type fun x =>
+    withReader (fun ctx => { ctx with auxDeclToFullName := ctx.auxDeclToFullName.insert x.fvarId! declName }) do
+      k x
 
 /--
   Execute `x` without converting errors (i.e., exceptions) to `sorry` applications.
@@ -495,7 +490,7 @@ def getMVarErrorInfo? (mvarId : MVarId) : TermElabM (Option MVarErrorInfo) := do
 
 def registerCustomErrorIfMVar (e : Expr) (ref : Syntax) (msgData : MessageData) : TermElabM Unit :=
   match e.getAppFn with
-  | Expr.mvar mvarId _ => registerMVarErrorCustomInfo mvarId ref msgData
+  | Expr.mvar mvarId => registerMVarErrorCustomInfo mvarId ref msgData
   | _ => pure ()
 
 /-
@@ -678,9 +673,9 @@ partial def visit (e : Expr) : M Unit := do
     | Expr.forallE _ d b _   => visit d; visit b
     | Expr.lam _ d b _       => visit d; visit b
     | Expr.letE _ t v b _    => visit t; visit v; visit b
-    | Expr.app f a _         => visit f; visit a
-    | Expr.mdata _ b _       => visit b
-    | Expr.proj _ _ b _      => visit b
+    | Expr.app f a           => visit f; visit a
+    | Expr.mdata _ b         => visit b
+    | Expr.proj _ _ b        => visit b
     | Expr.fvar fvarId ..    =>
       match (← getLocalDecl fvarId) with
       | LocalDecl.cdecl .. => return ()
@@ -691,7 +686,7 @@ partial def visit (e : Expr) : M Unit := do
         visit e'
       else
         match (← getDelayedMVarAssignment? mvarId) with
-        | some d => visit d.val
+        | some d => visit (mkMVar d.mvarIdPending)
         | none   => failure
     | _ => return ()
 
@@ -776,7 +771,7 @@ def synthesizeCoeInstMVarCore (instMVar : MVarId) : TermElabM Bool := do
 -/
 def tryCoeThunk? (expectedType : Expr) (eType : Expr) (e : Expr) : TermElabM (Option Expr) := do
   match expectedType with
-  | Expr.app (Expr.const ``Thunk u _) arg _ =>
+  | Expr.app (Expr.const ``Thunk u) arg =>
     if (← isDefEq eType arg) then
       return some (mkApp2 (mkConst ``Thunk.mk u) arg (mkSimpleThunk e))
     else
@@ -818,14 +813,14 @@ private def tryCoe (errorMsgHeader? : Option String) (expectedType : Expr) (eTyp
     return e
   else match (← tryCoeThunk? expectedType eType e) with
     | some r => return r
-    | none   => mkCoe expectedType eType e f? errorMsgHeader?
+    | none   => trace[Elab.coe] "adding coercion for {e} : {eType} =?= {expectedType}"; mkCoe expectedType eType e f? errorMsgHeader?
 
 /-- Return `some (m, α)` if `type` can be reduced to an application of the form `m α` using `[reducible]` transparency. -/
 def isTypeApp? (type : Expr) : TermElabM (Option (Expr × Expr)) := do
   let type ← withReducible <| whnf type
   match type with
-  | Expr.app m α _ => return some ((← instantiateMVars m), (← instantiateMVars α))
-  | _              => return none
+  | Expr.app m α => return some ((← instantiateMVars m), (← instantiateMVars α))
+  | _            => return none
 
 /-- Helper method used to implement auto-lift and coercions -/
 private def synthesizeInst (type : Expr) : TermElabM Expr := do
@@ -992,10 +987,13 @@ def tryPostpone : TermElabM Unit := do
   if (← read).mayPostpone then
     throwPostpone
 
+/-- Return `true` if `e` reduces (by unfolding only `[reducible]` declarations) to `?m ...` -/
+def isMVarApp (e : Expr) : TermElabM Bool :=
+  return (← whnfR e).getAppFn.isMVar
+
 /-- If `mayPostpone == true` and `e`'s head is a metavariable, throw `Exception.postpone`. -/
 def tryPostponeIfMVar (e : Expr) : TermElabM Unit := do
-  let e ← whnfR e
-  if e.getAppFn.isMVar then
+  if (← isMVarApp e) then
     tryPostpone
 
 /-- If `e? = some e`, then `tryPostponeIfMVar e`, otherwise it is just `tryPostpone`. -/
@@ -1094,7 +1092,7 @@ partial def removeSaveInfoAnnotation (e : Expr) : Expr :=
 -/
 def isTacticOrPostponedHole? (e : Expr) : TermElabM (Option MVarId) := do
   match e with
-  | Expr.mvar mvarId _ =>
+  | Expr.mvar mvarId =>
     match (← getSyntheticMVarDecl? mvarId) with
     | some { kind := SyntheticMVarKind.tactic .., .. }    => return mvarId
     | some { kind := SyntheticMVarKind.postponed .., .. } => return mvarId
@@ -1264,7 +1262,7 @@ private def useImplicitLambda? (stx : Syntax) (expectedType? : Option Expr) : Te
         let expectedType ← whnfForall expectedType
         match expectedType with
         | Expr.forallE _ _ _ c =>
-          if c.binderInfo.isImplicit || c.binderInfo.isInstImplicit then
+          if c.isImplicit || c.isInstImplicit then
             return some expectedType
           else
             return none
@@ -1301,11 +1299,11 @@ private partial def elabImplicitLambda (stx : Syntax) (catchExPostpone : Bool) (
 where
   loop
     | type@(Expr.forallE n d b c), fvars =>
-      if c.binderInfo.isExplicit then
+      if c.isExplicit then
         elabImplicitLambdaAux stx catchExPostpone type fvars
       else withFreshMacroScope do
         let n ← MonadQuotation.addMacroScope n
-        withLocalDecl n c.binderInfo d fun fvar => do
+        withLocalDecl n c d fun fvar => do
           let type ← whnfForall (b.instantiate1 fvar)
           loop type (fvars.push fvar)
     | type, fvars =>
@@ -1564,25 +1562,96 @@ def isLetRecAuxMVar (mvarId : MVarId) : TermElabM Bool := do
 
 def resolveLocalName (n : Name) : TermElabM (Option (Expr × List String)) := do
   let lctx ← getLCtx
+  let auxDeclToFullName := (← read).auxDeclToFullName
+  let currNamespace ← getCurrNamespace
   let view := extractMacroScopes n
-  let rec loop (n : Name) (projs : List String) :=
-    match lctx.findFromUserName? { view with name := n }.review with
-    | some decl =>
-      if decl.isAuxDecl && !projs.isEmpty then
-        /- We do not consider dot notation for local decls corresponding to recursive functions being defined.
-           The following example would not be elaborated correctly without this case.
-           ```
-            def foo.aux := 1
-            def foo : Nat → Nat
-              | n => foo.aux -- should not be interpreted as `(foo).bar`
-           ```
-         -/
-        none
+  /- Simple case. "Match" function for regular local declarations. -/
+  let matchLocaDecl? (localDecl : LocalDecl) (givenName : Name) : Option LocalDecl := do
+    guard (localDecl.userName == givenName)
+    return localDecl
+  /- "Match" function for auxiliary declarations that correspond to recursive definitions being defined. -/
+  let matchAuxRecDecl? (localDecl : LocalDecl) (fullDeclName : Name) (givenNameView : MacroScopesView) : Option LocalDecl := do
+    let fullDeclView := extractMacroScopes fullDeclName
+    /- First cleanup private name annotations -/
+    let fullDeclView := { fullDeclView with name := (privateToUserName? fullDeclView.name).getD fullDeclView.name }
+    let fullDeclName := fullDeclView.review
+    let localDeclNameView := extractMacroScopes localDecl.userName
+    /- If the current namespace is a prefix of the full declaration name,
+       we use a relaxed matching test where we must satisfy the following conditions
+       - The local declaration is a suffix of the given name.
+       - The given name is a suffix of the full declaration.
+
+       Recall the `let rec`/`where` declaration naming convention. For example, suppose we have
+       ```
+       def Foo.Bla.f ... :=
+         ... go ...
+       where
+          go ... := ...
+       ```
+       The current namespace is `Foo.Bla`, and the full name for `go` is `Foo.Bla.f.g`, but we want to
+       refer to it using just `go`. It is also accepted to refer to it using `f.go`, `Bla.f.go`, etc.
+
+    -/
+    if currNamespace.isPrefixOf fullDeclName then
+      /- Relaxed mode that allows us to access `let rec` declarations using shorter names -/
+      guard (localDeclNameView.isSuffixOf givenNameView)
+      guard (givenNameView.isSuffixOf fullDeclView)
+      return localDecl
+    else
+      /-
+         This case is only reachable when using mutual declarations. It is the standard
+         algorithm we using at `resolveGlobalName` for processing namespaces.
+
+         The current solution also has a limitation when using `def _root_` in a mutual block.
+         The non `def _root_` declarations may update the namespace. See the following example:
+         ```
+         mutual
+           def Foo.f ... := ...
+           def _root_.g ... := ...
+             let rec h := ...
+             ...
+         end
+         ```
+         `def Foo.f` updates the namespace. Then, even when processing `def _root_.g ...`
+         the condition `currNamespace.isPrefixOf fullDeclName` does not hold.
+         This is not a big problem because we are planning to modify how we handle the mutual block in the future.
+      -/
+      let rec go (ns : Name) : Option LocalDecl := do
+        if { givenNameView with name := ns ++ givenNameView.name }.review == fullDeclName then
+          return localDecl
+        match ns with
+        | .str pre .. => go pre
+        | _ => failure
+      return (← go currNamespace)
+  /- Traverse the local context backwards looking for match `givenNameView`.
+     If `skipAuxDecl` we ignore `auxDecl` local declarations. -/
+  let findLocalDecl? (givenNameView : MacroScopesView) (skipAuxDecl : Bool) : Option LocalDecl :=
+    let givenName := givenNameView.review
+    lctx.decls.findSomeRev? fun localDecl? => do
+      let localDecl ← localDecl?
+      if localDecl.binderInfo == .auxDecl then
+        guard (not skipAuxDecl)
+        if let some fullDeclName := auxDeclToFullName.find? localDecl.fvarId then
+          matchAuxRecDecl? localDecl fullDeclName givenNameView
+        else
+          matchLocaDecl? localDecl givenName
       else
-        some (decl.toExpr, projs)
-    | none      => match n with
-      | Name.str pre s _ => loop pre (s::projs)
-      | _                => none
+        matchLocaDecl? localDecl givenName
+  let rec loop (n : Name) (projs : List String) :=
+    let givenNameView := { view with name := n }
+    /- We do not consider dot notation for local decls corresponding to recursive functions being defined.
+       The following example would not be elaborated correctly without this case.
+       ```
+        def foo.aux := 1
+        def foo : Nat → Nat
+          | n => foo.aux -- should not be interpreted as `(foo).bar`
+       ```
+    -/
+    match findLocalDecl? givenNameView (skipAuxDecl := not projs.isEmpty) with
+    | some decl => some (decl.toExpr, projs)
+    | none => match n with
+      | .str pre s => loop pre (s::projs)
+      | _ => none
   return loop view.name []
 
 /-- Return true iff `stx` is a `Syntax.ident`, and it is a local variable. -/
@@ -1710,7 +1779,7 @@ def expandDeclId (currNamespace : Name) (currLevelNames : List Name) (declId : S
   `(Nat.succ $(← exprToSyntax e))
   ```
 -/
-def exprToSyntax (e : Expr) : TermElabM Term := do
+def exprToSyntax (e : Expr) : TermElabM Term := withFreshMacroScope do
   let result ← `(?m)
   let eType ← inferType e
   let mvar ← elabTerm result eType

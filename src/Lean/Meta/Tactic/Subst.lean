@@ -26,7 +26,7 @@ def substCore (mvarId : MVarId) (hFVarId : FVarId) (symm := false) (fvarSubst : 
       let a ← instantiateMVars <| if symm then rhs else lhs
       let b ← instantiateMVars <| if symm then lhs else rhs
       match a with
-      | Expr.fvar aFVarId _ => do
+      | Expr.fvar aFVarId => do
         let aFVarIdOriginal := aFVarId
         trace[Meta.Tactic.subst] "substituting {a} (id: {aFVarId.name}) with {b}"
         if (← exprDependsOn b aFVarId) then
@@ -181,7 +181,6 @@ where
     let localDecl ← getLocalDecl h
     if localDecl.isLet then
       throwTacticEx `subst mvarId m!"variable '{mkFVar h}' is a let-declaration"
-    let mctx ← getMCtx
     let lctx ← getLCtx
     let some (fvarId, symm) ← lctx.findDeclM? fun localDecl => do
        if localDecl.isAuxDecl then

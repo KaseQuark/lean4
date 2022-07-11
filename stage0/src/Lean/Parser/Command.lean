@@ -55,8 +55,8 @@ def «partial»        := leading_parser "partial "
 def «nonrec»         := leading_parser "nonrec "
 def declModifiers (inline : Bool) := leading_parser optional docComment >> optional (Term.«attributes» >> if inline then skip else ppDedent ppLine) >> optional visibility >> optional «noncomputable» >> optional «unsafe» >> optional («partial» <|> «nonrec»)
 def declId           := leading_parser ident >> optional (".{" >> sepBy1 ident ", " >> "}")
-def declSig          := leading_parser many (ppSpace >> (Term.simpleBinderWithoutType <|> Term.bracketedBinder)) >> Term.typeSpec
-def optDeclSig       := leading_parser many (ppSpace >> (Term.simpleBinderWithoutType <|> Term.bracketedBinder)) >> Term.optType
+def declSig          := leading_parser many (ppSpace >> (Term.binderIdent <|> Term.bracketedBinder)) >> Term.typeSpec
+def optDeclSig       := leading_parser many (ppSpace >> (Term.binderIdent <|> Term.bracketedBinder)) >> Term.optType
 def declValSimple    := leading_parser " :=" >> ppHardLineUnlessUngrouped >> termParser >> optional Term.whereDecls
 def declValEqns      := leading_parser Term.matchAltsWhereDecls
 def whereStructField := leading_parser Term.letDecl
@@ -80,7 +80,10 @@ def «example»        := leading_parser "example" >> ppIndent declSig >> declVa
 def ctor             := leading_parser "\n| " >> ppIndent (declModifiers true >> ident >> optDeclSig)
 def derivingClasses  := sepBy1 (group (ident >> optional (" with " >> Term.structInst))) ", "
 def optDeriving      := leading_parser optional (ppLine >> atomic ("deriving " >> notSymbol "instance") >> derivingClasses)
-def «inductive»      := leading_parser "inductive " >> declId >> optDeclSig >> optional (symbol " :=" <|> " where") >> many ctor >> optDeriving
+def computedField    := leading_parser declModifiers true >> ident >> " : " >> termParser >> Term.matchAlts
+def computedFields   := leading_parser "with" >> manyIndent (ppLine >> ppGroup computedField)
+def «inductive»      := leading_parser "inductive " >> declId >> optDeclSig >> optional (symbol " :=" <|> " where") >>
+  many ctor >> optional (ppDedent ppLine >> computedFields) >> optDeriving
 def classInductive   := leading_parser atomic (group (symbol "class " >> "inductive ")) >> declId >> ppIndent optDeclSig >> optional (symbol " :=" <|> " where") >> many ctor >> optDeriving
 def structExplicitBinder := leading_parser atomic (declModifiers true >> "(") >> many1 ident >> ppIndent optDeclSig >> optional (Term.binderTactic <|> Term.binderDefault) >> ")"
 def structImplicitBinder := leading_parser atomic (declModifiers true >> "{") >> many1 ident >> declSig >> "}"

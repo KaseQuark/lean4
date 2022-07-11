@@ -1,13 +1,122 @@
 Unreleased
 ---------
 
-* Update array access notation. Now, given `a : Array α`, `a[i]` never "panics" at runtime and `i : Fin a.size`.
-  Two new notations were introduced: `a[i]!` and `a[i]?`, `i` is a natural number in both cases. For `a[i]!`,
-  a panic error message is produced at runtime if `i` is an index out of bounds. `a[i]?` has type `Option α`,
-  and `a[i]?` evaluates to `none` if the index `i` is out of bounds. See discussion on [Zulip](https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/String.2EgetOp/near/287855425),
-  and issue [#406](https://github.com/leanprover/lean4/issues/406) for additional details.
+* Add support for computed fields in inductives. Example:
+  ```lean
+  inductive Exp
+    | var (i : Nat)
+    | app (a b : Exp)
+  with
+    @[computedField] hash : Exp → Nat
+      | .var i => i
+      | .app a b => a.hash * b.hash + 1
+  ```
+  The result of the `Exp.hash` function is then stored as an extra "computed" field in the `.var` and `.app` constructors;
+  `Exp.hash` accesses this field and thus runs in constant time (even on dag-like values).
 
-* Update Lake to v3.2.0. See the [v3.2.0 release notes](https://github.com/leanprover/lake/releases/tag/v3.2.0) for detailed changes.
+* Update `a[i]` notation. It is now based on the typeclass
+  ```lean
+  class GetElem (Cont : Type u) (Idx : Type v) (Elem : outParam (Type w)) (Dom : outParam (Cont → Idx → Prop)) where
+    getElem (xs : Cont) (i : Idx) (h : Dom xs i) : Elem
+  ```
+  The notation `a[i]` is now defined as follows
+  ```lean
+  macro:max x:term noWs "[" i:term "]" : term => `(getElem $x $i (by get_elem_tactic))
+  ```
+  The proof that `i` is a valid index is synthesized using the tactic `get_elem_tactic`.
+  For example, the type `Array α` has the following instances
+  ```lean
+  instance : GetElem (Array α) Nat α fun xs i => LT.lt i xs.size where ...
+  instance : GetElem (Array α) USize α fun xs i => LT.lt i.toNat xs.size where ...
+  ```
+  You can use the notation `a[i]'h` to provide the proof manually.
+  Two other notations were introduced: `a[i]!` and `a[i]?`, For `a[i]!`, a panic error message is produced at
+  runtime if `i` is not a valid index. `a[i]?` has type `Option α`, and `a[i]?` evaluates to `none` if the
+  index `i` is not valid.
+  The three new notations are defined as follows:
+  ```lean
+  @[inline] def getElem' [GetElem Cont Idx Elem Dom] (xs : Cont) (i : Idx) (h : Dom xs i) : Elem :=
+  getElem xs i h
+
+  @[inline] def getElem! [GetElem Cont Idx Elem Dom] [Inhabited Elem] (xs : Cont) (i : Idx) [Decidable (Dom xs i)] : Elem :=
+    if h : _ then getElem xs i h else panic! "index out of bounds"
+
+  @[inline] def getElem? [GetElem Cont Idx Elem Dom] (xs : Cont) (i : Idx) [Decidable (Dom xs i)] : Option Elem :=
+    if h : _ then some (getElem xs i h) else none
+
+  macro:max x:term noWs "[" i:term "]" noWs "?" : term => `(getElem? $x $i)
+  macro:max x:term noWs "[" i:term "]" noWs "!" : term => `(getElem! $x $i)
+  macro x:term noWs "[" i:term "]'" h:term:max : term => `(getElem' $x $i $h)
+  ```
+  See discussion on [Zulip](https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/String.2EgetOp/near/287855425).
+  Examples:
+  ```lean
+  example (a : Array Int) (i : Nat) : Int :=
+    a[i] -- Error: failed to prove index is valid ...
+
+  example (a : Array Int) (i : Nat) (h : i < a.size) : Int :=
+    a[i] -- Ok
+
+  example (a : Array Int) (i : Nat) : Int :=
+    a[i]! -- Ok
+
+  example (a : Array Int) (i : Nat) : Option Int :=
+    a[i]? -- Ok
+
+  example (a : Array Int) (h : a.size = 2) : Int :=
+    a[0]'(by rw [h]; decide) -- Ok
+
+  example (a : Array Int) (h : a.size = 2) : Int :=
+    have : 0 < a.size := by rw [h]; decide
+    have : 1 < a.size := by rw [h]; decide
+    a[0] + a[1] -- Ok
+
+  example (a : Array Int) (i : USize) (h : i.toNat < a.size) : Int :=
+    a[i] -- Ok
+  ```
+  The `get_elem_tactic` is defined as
+  ```lean
+  macro "get_elem_tactic" : tactic =>
+    `(first
+      | get_elem_tactic_trivial
+      | fail "failed to prove index is valid, ..."
+     )
+  ```
+  The `get_elem_tactic_trivial` auxiliary tactic can be extended using `macro_rules`. By default, it tries `trivial`, `simp_arith`, and a special case for `Fin`. In the future, it will also try `linarith`.
+  You can extend `get_elem_tactic_trivial` using `my_tactic` as follows
+  ```lean
+  macro_rules
+  | `(tactic| get_elem_tactic_trivial) => `(tactic| my_tactic)
+  ```
+  Note that `Idx`'s type in `GetElem` does not depend on `Cont`. So, you cannot write the instance `instance : GetElem (Array α) (Fin ??) α fun xs i => ...`, but the Lean library comes equipped with the following auxiliary instance:
+  ```lean
+  instance [GetElem Cont Nat Elem Dom] : GetElem Cont (Fin n) Elem fun xs i => Dom xs i where
+    getElem xs i h := getElem xs i.1 h
+  ```
+  and helper tactic
+  ```lean
+  macro_rules
+  | `(tactic| get_elem_tactic_trivial) => `(tactic| apply Fin.val_lt_of_le; get_elem_tactic_trivial; done)
+  ```
+  Example:
+  ```lean
+  example (a : Array Nat) (i : Fin a.size) :=
+    a[i] -- Ok
+
+  example (a : Array Nat) (h : n ≤ a.size) (i : Fin n) :=
+    a[i] -- Ok
+  ```
+
+* Better support for qualified names in recursive declarations. The following is now supported:
+  ```lean
+  namespace Nat
+    def fact : Nat → Nat
+    | 0 => 1
+    | n+1 => (n+1) * Nat.fact n
+  end Nat
+  ```
+
+* Update Lake to v3.2.1. See the [v3.2.1 release notes](https://github.com/leanprover/lake/releases/tag/v3.2.1) for detailed changes.
 
 * Add support for `CommandElabM` monad at `#eval`. Example:
   ```lean
