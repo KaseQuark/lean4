@@ -101,6 +101,47 @@ structure TextDocumentEdit where
 -- both of these are pretty global, we can look at their
 -- uses when single file behaviour works.
 
+structure ChangeAnnotation where
+  label : String
+  needsConfirmation? : Option Bool
+  description? : Option String
+  deriving ToJson, FromJson
+
+def WorkspaceEditChanges := Std.RBMap DocumentUri (TextEditBatch) compare
+
+instance : ToJson WorkspaceEditChanges := ⟨fun c => Id.run do
+  let oldList := c.toList
+  let mut newList := []
+  for ⟨key, value⟩ in oldList do
+    let newValue := ⟨key, (toJson value)⟩
+    newList := newValue::newList
+  let newMap := Std.RBMap.fromList newList Ord.compare
+  return Json.obj newMap.val
+⟩
+
+def WorkspaceEditChangeAnnotations := Std.RBMap String (ChangeAnnotation) compare
+
+instance : ToJson WorkspaceEditChangeAnnotations := ⟨fun c => Id.run do
+  let oldList := c.toList
+  let mut newList := []
+  for ⟨key, value⟩ in oldList do
+    let newValue := ⟨key, (toJson value)⟩
+    newList := newValue::newList
+  let newMap := Std.RBMap.fromList newList Ord.compare
+  return Json.obj newMap.val
+⟩
+
+structure WorkspaceEdit where
+  changes? : Option (WorkspaceEditChanges)
+  documentChanges? : Option (Array TextDocumentEdit)
+  changeAnnotations? : Option (WorkspaceEditChangeAnnotations)
+  deriving ToJson
+
+structure ApplyWorkspaceEditParams where
+  label? : Option String
+  edit : WorkspaceEdit
+  deriving ToJson
+
 structure TextDocumentItem where
   uri : DocumentUri
   languageId : String

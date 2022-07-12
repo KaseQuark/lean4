@@ -200,6 +200,7 @@ def handlePlainTermGoal (p : PlainTermGoalParams)
 def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
     : RequestM (RequestTask (Option Widget.ConvZoomCommands)) := do
   let t ← getInteractiveGoals p
+  let ctx ← read
   let goals := match t.get with
   | Except.ok x => match x with
     | some val => val.goals
@@ -211,8 +212,11 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
   withWaitFindSnap doc (fun s => s.endPos >= hoverPos)
     (notFoundX := pure none) fun snap => do
       let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx
-        (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos text))
-      return some ret
+        (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos doc))
+      let hOut := ctx.hOut
+      let request : JsonRpc.Request ApplyWorkspaceEditParams := { id := "applyEdit", method := "workspace/applyEdit", param := ret.params }
+      let _ := ←hOut.writeLspMessage request
+      return some ret.commands
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)
     : RequestM (RequestTask (Array DocumentHighlight)) := do

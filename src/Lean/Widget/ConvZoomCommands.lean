@@ -6,6 +6,8 @@ Authors: Robin Böhne
 import Lean.Widget.InteractiveGoal
 import Lean.Meta.ExprLens
 import Lean.Server.InfoUtils
+import Lean.Server.FileWorker.Utils
+import Lean.Data.Lsp.Utf16
 
 namespace Lean.Widget
 open Server
@@ -179,6 +181,7 @@ private def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn
   return {pathBeforeConv := path.reverse, pathAfterConv := pathAfterConv }
 
 private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : Syntax := Id.run do
+  if value == "" then return stx
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -234,6 +237,18 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       t := t.down pathAfterConv.head!
       pathAfterConv := pathAfterConv.tail!
 
+    -- check if it's an enter and if yes merge them
+    let argAsString := reprint! t.cur.getArgs[pathAfterConv.head!]!
+    let mut newval := value
+    let mut convsMerged := false
+    if "enter".isPrefixOf argAsString then
+      let mut additionalArgs := (argAsString.splitOn "\n").head!
+      additionalArgs := (additionalArgs.drop 7).dropRight 1
+
+      let left := value.take 7
+      let right := value.drop 7
+      newval := left ++ additionalArgs ++ ", " ++ right
+      convsMerged := true
     --get whitespace from previous tactic and make new node
 
 
@@ -271,17 +286,23 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
 
 
-    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ value ++ "\n" ++ whitespace)
+    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ newval ++ "\n" ++ whitespace)
     -- add new node to syntax and move to the very top
     let argList := t.cur.getArgs.toList
-    let newArgList := List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
+    let newArgList := match convsMerged with
+      | false => List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
+      | true => List.append (argList.take (pathAfterConv.head!) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
     t := t.setCur (t.cur.setArgs newArgList.toArray)
     while t.parents.size > 0 do
       t := t.up
 
     return t.cur
 
-def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p: String.Pos) (text: FileMap): MetaM ConvZoomCommands := do
+structure ConvZoomReturn where
+  commands : ConvZoomCommands
+  params : Lsp.ApplyWorkspaceEditParams
+
+def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p : String.Pos) (doc : Lean.Server.FileWorker.EditableDocument): MetaM ConvZoomReturn := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
   let mut expr := (getExprFromCodeWithInfos goalParam.type).head!
   let mut ret := ""
@@ -312,6 +333,7 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
         | none => panic! "could not get range"
 
   -- insert new syntax into document
+  let text := doc.meta.text
   let part1 := text.source.take range.start.byteIdx
   let part2 := text.source.drop (range.stop.byteIdx + 2)
   let newsrc := part1 ++ val ++ part2
@@ -319,6 +341,12 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
   ret := ret ++ "--Result after inserting enter:\n"
   ret := ret ++ "/-\n" ++ newsrc ++ "\n-/"
 
-  return { commands? := ret }
+  let commands : ConvZoomCommands := { commands? := "" }
+
+  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos {byteIdx := range.stop.byteIdx + 2} }, newText := val}
+  let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
+  let edit : Lsp.WorkspaceEdit := { changes? := none, documentChanges? := [textDocumentEdit].toArray , changeAnnotations? := none}
+  let params : Lsp.ApplyWorkspaceEditParams := { label? := none, edit := edit }
+  return { commands:= commands, params := params }
 
 end Lean.Widget
