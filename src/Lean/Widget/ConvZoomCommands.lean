@@ -14,8 +14,8 @@ open Except in
 /-- Get the raw subexpression withotu performing any instantiation. -/
 private def viewCoordRaw: Nat → Expr → Except String Expr
   | 3, e                        => error s!"Can't viewRaw the type of {e}"
-  | 0, (Expr.app f _ _)       => ok f
-  | 1, (Expr.app _ a _)       => ok a
+  | 0, (Expr.app f _)       => ok f
+  | 1, (Expr.app _ a)       => ok a
   | 0, (Expr.lam _ y _ _)     => ok y
   | 1, (Expr.lam _ _ b _)     => ok b
   | 0, (Expr.forallE _ y _ _) => ok y
@@ -23,8 +23,8 @@ private def viewCoordRaw: Nat → Expr → Except String Expr
   | 0, (Expr.letE _ y _ _ _)  => ok y
   | 1, (Expr.letE _ _ a _ _)  => ok a
   | 2, (Expr.letE _ _ _ b _)  => ok b
-  | 0, (Expr.proj _ _ b _)    => ok b
-  | n, (Expr.mdata _ a _)     => viewCoordRaw n a
+  | 0, (Expr.proj _ _ b)    => ok b
+  | n, (Expr.mdata _ a)     => viewCoordRaw n a
   | c, e                        => error s!"Bad coordinate {c} for {e}"
 
 structure ConvZoomCommands where
@@ -52,7 +52,7 @@ private structure SolveReturn where
   listRest : List Nat
 
 private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn := match expr with
-  | Expr.app _ _ _ => do
+  | Expr.app _ _ => do
     let mut descExp := expr
     let mut count := 0
     let mut explicitList := []
@@ -90,20 +90,20 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
   | Expr.lam n _ b _ => do
     let name := match n with
       | Name.anonymous => "anonymus"
-      | Name.str _ s _ => s
-      | Name.num _ _ _ => toString (listParam.head! + 1)
+      | Name.str _ s => s
+      | Name.num _ _ => toString (listParam.head! + 1)
     return { expr := b, val? := name, listRest := listParam.tail! }
 
   | Expr.forallE n _ b _ => do
     let name := match n with
       | Name.anonymous => "anonymus"
-      | Name.str _ s _ => s
-      | Name.num _ _ _ => toString (listParam.head! + 1)
+      | Name.str _ s => s
+      | Name.num _ _ => toString (listParam.head! + 1)
     return { expr := b, val? := name, listRest := listParam.tail! }
 
-  | Expr.mdata _ b _ => do
+  | Expr.mdata _ b => do
     match b with
-      | Expr.mdata _ _ _ => return {expr := b, val? := none, listRest := listParam }
+      | Expr.mdata _ _ => return {expr := b, val? := none, listRest := listParam }
       | _ => return {expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
 
   | _ =>
@@ -235,9 +235,15 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       pathAfterConv := pathAfterConv.tail!
 
     --get whitespace from previous tactic and make new node
-    let argNr := match pathAfterConv.head! with
+
+
+    /-let argNr := match pathAfterConv.head! with
       | 0 => 0
-      | x => x - 1
+      | x => x - 1-/
+    --for some reason the above does not work, might be fixed soon
+    let mut argNr := pathAfterConv.head!
+    if argNr != 0 then argNr := argNr - 1
+
     let prevArg := reprint! t.cur.getArgs[argNr]!
     let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
     let mut whitespace := ""
