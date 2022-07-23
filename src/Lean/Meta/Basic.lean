@@ -19,7 +19,7 @@ import Lean.Meta.DiscrTreeTypes
 import Lean.Eval
 import Lean.CoreM
 
-/-
+/-!
 This module provides four (mutually dependent) goodies that are needed for building the elaborator and tactic frameworks.
 1- Weak head normal form computation with support for metavariables and transparency modes.
 2- Definitionally equality checking with support for metavariables (aka unification modulo definitional equality).
@@ -34,31 +34,31 @@ namespace Lean.Meta
 builtin_initialize isDefEqStuckExceptionId : InternalExceptionId ← registerInternalExceptionId `isDefEqStuck
 
 /--
-  Configuration flags for the `MetaM` monad.
-  Many of them are used to control the `isDefEq` function that checks whether two terms are definitionally equal or not.
-  Recall that when `isDefEq` is trying to check whether
-  `?m@C a₁ ... aₙ` and `t` are definitionally equal (`?m@C a₁ ... aₙ =?= t`), where
-  `?m@C` as a shorthand for `C |- ?m : t` where `t` is the type of `?m`.
-  We solve it using the assignment `?m := fun a₁ ... aₙ => t` if
-  1) `a₁ ... aₙ` are pairwise distinct free variables that are ​*not*​ let-variables.
-  2) `a₁ ... aₙ` are not in `C`
-  3) `t` only contains free variables in `C` and/or `{a₁, ..., aₙ}`
-  4) For every metavariable `?m'@C'` occurring in `t`, `C'` is a subprefix of `C`
-  5) `?m` does not occur in `t`
+Configuration flags for the `MetaM` monad.
+Many of them are used to control the `isDefEq` function that checks whether two terms are definitionally equal or not.
+Recall that when `isDefEq` is trying to check whether
+`?m@C a₁ ... aₙ` and `t` are definitionally equal (`?m@C a₁ ... aₙ =?= t`), where
+`?m@C` as a shorthand for `C |- ?m : t` where `t` is the type of `?m`.
+We solve it using the assignment `?m := fun a₁ ... aₙ => t` if
+1) `a₁ ... aₙ` are pairwise distinct free variables that are ​*not*​ let-variables.
+2) `a₁ ... aₙ` are not in `C`
+3) `t` only contains free variables in `C` and/or `{a₁, ..., aₙ}`
+4) For every metavariable `?m'@C'` occurring in `t`, `C'` is a subprefix of `C`
+5) `?m` does not occur in `t`
 -/
 structure Config where
   /--
     If `foApprox` is set to true, and some `aᵢ` is not a free variable,
-     then we use first-order unification
-     ```
-       ?m a_1 ... a_i a_{i+1} ... a_{i+k} =?= f b_1 ... b_k
-     ```
-     reduces to
-     ```
-       ?m a_1 ... a_i =?= f
-       a_{i+1}        =?= b_1
-       ...
-       a_{i+k}        =?= b_k
+    then we use first-order unification
+    ```
+      ?m a_1 ... a_i a_{i+1} ... a_{i+k} =?= f b_1 ... b_k
+    ```
+    reduces to
+    ```
+      ?m a_1 ... a_i =?= f
+      a_{i+1}        =?= b_1
+      ...
+      a_{i+k}        =?= b_k
     ```
   -/
   foApprox           : Bool := false
@@ -136,6 +136,34 @@ structure ParamInfo where
     This information affects the generation of congruence theorems.
   -/
   isDecInst      : Bool       := false
+  /--
+    `higherOrderOutParam` is true if this parameter is a higher-order output parameter
+    of local instance.
+    Example:
+    ```
+    getElem :
+      {Cont : Type u_1} → {Idx : Type u_2} → {Elem : Type u_3} →
+      {Dom : Cont → Idx → Prop} → [self : GetElem Cont Idx Elem Dom] →
+      (xs : Cont) → (i : Idx) → Dom xs i → Elem
+    ```
+    This flag is true for the parameter `Dom` because it is output parameter of
+    `[self : GetElem Cont Idx Elem Dom]`
+   -/
+  higherOrderOutParam : Bool  := false
+  /--
+    `dependsOnHigherOrderOutParam` is true if the type of this parameter depends on
+    the higher-order output parameter of a previous local instance.
+    Example:
+    ```
+    getElem :
+      {Cont : Type u_1} → {Idx : Type u_2} → {Elem : Type u_3} →
+      {Dom : Cont → Idx → Prop} → [self : GetElem Cont Idx Elem Dom] →
+      (xs : Cont) → (i : Idx) → Dom xs i → Elem
+    ```
+    This flag is true for the parameter with type `Dom xs i` since `Dom` is an output parameter
+    of the instance `[self : GetElem Cont Idx Elem Dom]`
+  -/
+  dependsOnHigherOrderOutParam : Bool := false
   deriving Inhabited
 
 def ParamInfo.isImplicit (p : ParamInfo) : Bool :=
@@ -396,7 +424,7 @@ def useEtaStruct (inductName : Name) : MetaM Bool := do
   | .all  => return true
   | .notClasses => return !isClass (← getEnv) inductName
 
-/- WARNING: The following 4 constants are a hack for simulating forward declarations.
+/-! WARNING: The following 4 constants are a hack for simulating forward declarations.
    They are defined later using the `export` attribute. This is hackish because we
    have to hard-code the true arity of these definitions here, and make sure the C names match.
    We have used another hack based on `IO.Ref`s in the past, it was safer but less efficient. -/
@@ -453,7 +481,7 @@ def mkFreshTypeMVar (kind := MetavarKind.natural) (userName := Name.anonymous) :
   let u ← mkFreshLevelMVar
   mkFreshExprMVar (mkSort u) kind userName
 
-/- Low-level version of `MkFreshExprMVar` which allows users to create/reserve a `mvarId` using `mkFreshId`, and then later create
+/-- Low-level version of `MkFreshExprMVar` which allows users to create/reserve a `mvarId` using `mkFreshId`, and then later create
    the metavar using this method. -/
 private def mkFreshExprMVarWithIdCore (mvarId : MVarId) (type : Expr)
     (kind : MetavarKind := MetavarKind.natural) (userName : Name := Name.anonymous) (numScopeArgs : Nat := 0)
@@ -509,7 +537,7 @@ def isSyntheticMVar (e : Expr) : MetaM Bool := do
 def setMVarKind (mvarId : MVarId) (kind : MetavarKind) : MetaM Unit :=
   modifyMCtx fun mctx => mctx.setMVarKind mvarId kind
 
-/- Update the type of the given metavariable. This function assumes the new type is
+/-- Update the type of the given metavariable. This function assumes the new type is
    definitionally equal to the current one -/
 def setMVarType (mvarId : MVarId) (type : Expr) : MetaM Unit := do
   modifyMCtx fun mctx => mctx.setMVarType mvarId type
@@ -662,7 +690,7 @@ private def getDefInfoTemp (info : ConstantInfo) : MetaM (Option ConstantInfo) :
     else
       return none
 
-/- Remark: we later define `getConst?` at `GetConst.lean` after we define `Instances.lean`.
+/-- Remark: we later define `getConst?` at `GetConst.lean` after we define `Instances.lean`.
    This method is only used to implement `isClassQuickConst?`.
    It is very similar to `getConst?`, but it returns none when `TransparencyMode.instances` and
    `constName` is an instance. This difference should be irrelevant for `isClassQuickConst?`. -/
@@ -1237,7 +1265,7 @@ private partial def instantiateForallAux (ps : Array Expr) (i : Nat) (e : Expr) 
   else
     pure e
 
-/- Given `e` of the form `forall (a_1 : A_1) ... (a_n : A_n), B[a_1, ..., a_n]` and `p_1 : A_1, ... p_n : A_n`, return `B[p_1, ..., p_n]`. -/
+/-- Given `e` of the form `forall (a_1 : A_1) ... (a_n : A_n), B[a_1, ..., a_n]` and `p_1 : A_1, ... p_n : A_n`, return `B[p_1, ..., p_n]`. -/
 def instantiateForall (e : Expr) (ps : Array Expr) : MetaM Expr :=
   instantiateForallAux ps 0 e
 
@@ -1250,7 +1278,7 @@ private partial def instantiateLambdaAux (ps : Array Expr) (i : Nat) (e : Expr) 
   else
     pure e
 
-/- Given `e` of the form `fun (a_1 : A_1) ... (a_n : A_n) => t[a_1, ..., a_n]` and `p_1 : A_1, ... p_n : A_n`, return `t[p_1, ..., p_n]`.
+/-- Given `e` of the form `fun (a_1 : A_1) ... (a_n : A_n) => t[a_1, ..., a_n]` and `p_1 : A_1, ... p_n : A_n`, return `t[p_1, ..., p_n]`.
    It uses `whnf` to reduce `e` if it is not a lambda -/
 def instantiateLambda (e : Expr) (ps : Array Expr) : MetaM Expr :=
   instantiateLambdaAux ps 0 e

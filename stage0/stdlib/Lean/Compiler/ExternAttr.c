@@ -43,7 +43,6 @@ static lean_object* l___private_Lean_Compiler_ExternAttr_0__Lean_getExternConstA
 lean_object* lean_environment_find(lean_object*, lean_object*);
 static lean_object* l_Lean_instInhabitedExternAttrData___closed__1;
 LEAN_EXPORT lean_object* l_Lean_initFn____x40_Lean_Compiler_ExternAttr___hyg_639____lambda__1___boxed(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
-lean_object* l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_844____spec__1(lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Lean_expandExternPattern(lean_object*, lean_object*);
 static lean_object* l___private_Lean_Compiler_ExternAttr_0__Lean_getExternConstArity___closed__6;
 lean_object* lean_st_ref_get(lean_object*, lean_object*);
@@ -51,8 +50,10 @@ uint8_t lean_name_eq(lean_object*, lean_object*);
 static lean_object* l_Lean_initFn____x40_Lean_Compiler_ExternAttr___hyg_639____closed__7;
 lean_object* lean_array_push(lean_object*, lean_object*);
 lean_object* lean_array_get_size(lean_object*);
+lean_object* l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_853____spec__1(lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* lean_string_append(lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Lean_ExternEntry_backend___boxed(lean_object*);
+uint8_t l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at___private_Lean_Meta_Basic_0__Lean_Meta_beqInfoCacheKey____x40_Lean_Meta_Basic___hyg_364____spec__1(lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Lean_getExternNameFor(lean_object*, lean_object*, lean_object*);
 static lean_object* l___private_Lean_Compiler_ExternAttr_0__Lean_getExternConstArity___closed__22;
 LEAN_EXPORT lean_object* l___private_Lean_Compiler_ExternAttr_0__Lean_syntaxToExternAttrData___lambda__1(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
@@ -116,7 +117,6 @@ LEAN_EXPORT lean_object* l_Lean_throwError___at___private_Lean_Compiler_ExternAt
 static lean_object* l_Array_forInUnsafe_loop___at___private_Lean_Compiler_ExternAttr_0__Lean_syntaxToExternAttrData___spec__3___closed__3;
 LEAN_EXPORT lean_object* l___private_Lean_Compiler_ExternAttr_0__Lean_syntaxToExternAttrData(lean_object*, lean_object*, lean_object*, lean_object*);
 size_t lean_usize_of_nat(lean_object*);
-uint8_t l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at___private_Lean_Meta_Basic_0__Lean_Meta_beqInfoCacheKey____x40_Lean_Meta_Basic___hyg_344____spec__1(lean_object*, lean_object*);
 lean_object* l_Lean_ConstantInfo_type(lean_object*);
 lean_object* l_instBEqProd___rarg(lean_object*, lean_object*, lean_object*, lean_object*);
 LEAN_EXPORT lean_object* l_Lean_throwErrorAt___at___private_Lean_Compiler_ExternAttr_0__Lean_syntaxToExternAttrData___spec__1(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
@@ -685,7 +685,7 @@ else
 {
 lean_object* x_17; uint8_t x_18; 
 x_17 = lean_box(0);
-x_18 = l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at___private_Lean_Meta_Basic_0__Lean_Meta_beqInfoCacheKey____x40_Lean_Meta_Basic___hyg_344____spec__1(x_14, x_17);
+x_18 = l___private_Init_Data_Option_Basic_0__beqOption____x40_Init_Data_Option_Basic___hyg_803____at___private_Lean_Meta_Basic_0__Lean_Meta_beqInfoCacheKey____x40_Lean_Meta_Basic___hyg_364____spec__1(x_14, x_17);
 if (x_18 == 0)
 {
 lean_object* x_19; lean_object* x_20; 
@@ -821,7 +821,7 @@ else
 lean_object* x_16; lean_object* x_17; 
 lean_free_object(x_6);
 x_16 = lean_add_extern(x_10, x_1);
-x_17 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_844____spec__1(x_16, x_3, x_4, x_9);
+x_17 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_853____spec__1(x_16, x_3, x_4, x_9);
 if (lean_obj_tag(x_17) == 0)
 {
 lean_object* x_18; lean_object* x_19; lean_object* x_20; 
@@ -862,7 +862,7 @@ else
 lean_object* x_25; lean_object* x_26; 
 lean_free_object(x_6);
 x_25 = lean_add_extern(x_10, x_1);
-x_26 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_844____spec__1(x_25, x_3, x_4, x_9);
+x_26 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_853____spec__1(x_25, x_3, x_4, x_9);
 if (lean_obj_tag(x_26) == 0)
 {
 lean_object* x_27; lean_object* x_28; lean_object* x_29; 
@@ -935,7 +935,7 @@ else
 {
 lean_object* x_43; lean_object* x_44; 
 x_43 = lean_add_extern(x_36, x_1);
-x_44 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_844____spec__1(x_43, x_3, x_4, x_35);
+x_44 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_853____spec__1(x_43, x_3, x_4, x_35);
 if (lean_obj_tag(x_44) == 0)
 {
 lean_object* x_45; lean_object* x_46; lean_object* x_47; 
@@ -977,7 +977,7 @@ else
 {
 lean_object* x_52; lean_object* x_53; 
 x_52 = lean_add_extern(x_36, x_1);
-x_53 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_844____spec__1(x_52, x_3, x_4, x_35);
+x_53 = l_Lean_ofExcept___at_Lean_initFn____x40_Lean_Class___hyg_853____spec__1(x_52, x_3, x_4, x_35);
 if (lean_obj_tag(x_53) == 0)
 {
 lean_object* x_54; lean_object* x_55; lean_object* x_56; 

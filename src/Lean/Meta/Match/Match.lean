@@ -188,18 +188,18 @@ private def processAsPattern (p : Problem) : MetaM Problem :=
       match alt.patterns with
       | Pattern.as fvarId p h :: ps =>
         /- We used to use `checkAndReplaceFVarId` here, but `x` and `fvarId` may have different types
-           when dependent types are beind used. Let's consider the repro for issue #471
-           ```
-            inductive vec : Nat → Type
-            | nil : vec 0
-            | cons : Int → vec n → vec n.succ
+          when dependent types are beind used. Let's consider the repro for issue #471
+          ```
+          inductive vec : Nat → Type
+          | nil : vec 0
+          | cons : Int → vec n → vec n.succ
 
-            def vec_len : vec n → Nat
-            | vec.nil => 0
-            | x@(vec.cons h t) => vec_len t + 1
+          def vec_len : vec n → Nat
+          | vec.nil => 0
+          | x@(vec.cons h t) => vec_len t + 1
 
-           ```
-           we reach the state
+          ```
+          we reach the state
           ```
             [Meta.Match.match] remaining variables: [x✝:(vec n✝)]
             alternatives:
@@ -297,7 +297,7 @@ def assign (fvarId : FVarId) (v : Expr) : M Bool := do
         The first step is a variable-transition which replaces `β` with `β✝` in the first and third alternatives.
         The constraint `β✝ === α` in the second alternative is lost. Note that `α` is not an alternative variable.
         After applying the variable-transition step twice, we reach the following state
-        ``lean
+        ```lean
         [Meta.Match.match] remaining variables: [f✝:(Arrow β✝ γ✝), g✝:(Arrow α β✝)]
         alternatives:
           [g:(Arrow α β✝)] |- [(Arrow.id .(β✝)), g] => h_1 β✝ g
@@ -392,7 +392,7 @@ private def hasRecursiveType (x : Expr) : MetaM Bool := do
   | some val => return val.isRec
   | _        => return false
 
-/- Given `alt` s.t. the next pattern is an inaccessible pattern `e`,
+/-- Given `alt` s.t. the next pattern is an inaccessible pattern `e`,
    try to normalize `e` into a constructor application.
    If it is not a constructor, throw an error.
    Otherwise, if it is a constructor application of `ctorName`,
@@ -688,7 +688,7 @@ private def moveToFront (p : Problem) (i : Nat) : Problem :=
 private partial def process (p : Problem) : StateRefT State MetaM Unit :=
   search 0
 where
-  /- If `p.vars` is empty, then we are done. Otherwise, we process `p.vars[0]`. -/
+  /-- If `p.vars` is empty, then we are done. Otherwise, we process `p.vars[0]`. -/
   tryToProcess (p : Problem) : StateRefT State MetaM Unit := withIncRecDepth do
     traceState p
     let isInductive ← isCurrVarInductive p
@@ -727,7 +727,7 @@ where
       checkNextPatternTypes p
       throwNonSupported p
 
-  /- Return `true` if `type` does not depend on the first `i` elements in `xs` -/
+  /-- Return `true` if `type` does not depend on the first `i` elements in `xs` -/
   checkVarDeps (xs : List Expr) (i : Nat) (type : Expr) : MetaM Bool := do
     match i, xs with
     | 0,   _     => return true
@@ -787,7 +787,7 @@ register_builtin_option bootstrap.genMatcherCode : Bool := {
 
 builtin_initialize matcherExt : EnvExtension (Std.PHashMap (Expr × Bool) Name) ← registerEnvExtension (pure {})
 
-/- Similar to `mkAuxDefinition`, but uses the cache `matcherExt`.
+/-- Similar to `mkAuxDefinition`, but uses the cache `matcherExt`.
    It also returns an Boolean that indicates whether a new matcher function was added to the environment or not. -/
 def mkMatcherAuxDefinition (name : Name) (type : Expr) (value : Expr) : MetaM (Expr × Option (MatcherInfo → MetaM Unit)) := do
   trace[Meta.Match.debug] "{name} : {type} := {value}"
@@ -985,7 +985,7 @@ def getMkMatcherInputInContext (matcherApp : MatcherApp) : MetaM MkMatcherInput 
 
   return { matcherName, matchType, discrInfos := matcherInfo.discrInfos, lhss := lhss.toList }
 
-/- This function is only used for testing purposes -/
+/-- This function is only used for testing purposes -/
 def withMkMatcherInput (matcherName : Name) (k : MkMatcherInput → MetaM α) : MetaM α := do
   let some matcherInfo ← getMatcherInfo? matcherName | throwError "not a matcher: {matcherName}"
   let matcherConst ← getConstInfo matcherName
@@ -998,7 +998,7 @@ def withMkMatcherInput (matcherName : Name) (k : MkMatcherInput → MetaM α) : 
 
 end Match
 
-/- Auxiliary function for MatcherApp.addArg -/
+/-- Auxiliary function for MatcherApp.addArg -/
 private partial def updateAlts (typeNew : Expr) (altNumParams : Array Nat) (alts : Array Expr) (i : Nat) : MetaM (Array Nat × Array Expr) := do
   if h : i < alts.size then
     let alt       := alts.get ⟨i, h⟩
@@ -1016,7 +1016,7 @@ private partial def updateAlts (typeNew : Expr) (altNumParams : Array Nat) (alts
   else
     return (altNumParams, alts)
 
-/- Given
+/-- Given
   - matcherApp `match_i As (fun xs => motive[xs]) discrs (fun ys_1 => (alt_1 : motive (C_1[ys_1])) ... (fun ys_n => (alt_n : motive (C_n[ys_n]) remaining`, and
   - expression `e : B[discrs]`,
   Construct the term

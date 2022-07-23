@@ -133,7 +133,51 @@ def isEtaUnassignedMVar (e : Expr) : MetaM Bool := do
       pure true
   | _   => pure false
 
-/-
+private def trySynthPending (e : Expr) : MetaM Bool := do
+  let mvarId? ← getStuckMVar? e
+  match mvarId? with
+  | some mvarId => Meta.synthPending mvarId
+  | none        => pure false
+
+/--
+  Result type for `isDefEqArgsFirstPass`.
+-/
+inductive DefEqArgsFirstPassResult where
+  | /--
+      Failed to establish that explicit arguments are def-eq.
+      Remark: higher output parameters, and parameters that depend on them
+      are postponed.
+    -/
+    failed
+  | /--
+      Succeeded. The array `postponedImplicit` contains the position
+      of the implicit arguments for which def-eq has been postponed.
+      `postponedHO` contains the higher order output parameters, and parameters
+      that depend on them. They should be processed after the implict ones.
+      `postponedHO` is used to handle applications involving functions that
+      contain higher order output parameters. Example:
+      ```lean
+      getElem :
+        {Cont : Type u_1} → {Idx : Type u_2} → {Elem : Type u_3} →
+        {Dom : Cont → Idx → Prop} → [self : GetElem Cont Idx Elem Dom] →
+        (xs : Cont) → (i : Idx) → (h : Dom xs i) → Elem
+      ```
+      The argumengs `Dom` and `h` must be processed after all implicit arguments
+      otherwise higher-order unification problems are generated. See issue #1299,
+      when trying to solve
+      ```
+      getElem ?a ?i ?h =?= getElem a i (Fin.val_lt_of_le i ...)
+      ```
+      we have to solve the constraint
+      ```
+      ?Dom a i.val =?= LT.lt i.val (Array.size a)
+      ```
+      by solving after the instance has been synthesized, we reduce this constraint to
+      a simple check.
+    -/
+    ok (postponedImplicit : Array Nat) (postponedHO : Array Nat)
+
+/--
   First pass for `isDefEqArgs`. We unify explicit arguments, *and* easy cases
   Here, we say a case is easy if it is of the form
 
@@ -161,66 +205,61 @@ def isEtaUnassignedMVar (e : Expr) : MetaM Bool := do
   introduce counter intuitive behavior.
 
   Pre: `paramInfo.size <= args₁.size = args₂.size`
+
+  See `DefEqArgsFirstPassResult` for additional information.
 -/
-private partial def isDefEqArgsFirstPass
-    (paramInfo : Array ParamInfo) (args₁ args₂ : Array Expr) : MetaM (Option (Array Nat)) := do
-  let rec loop (i : Nat) (postponed : Array Nat) := do
-    if h : i < paramInfo.size then
-      let info := paramInfo.get ⟨i, h⟩
-      let a₁ := args₁[i]!
-      let a₂ := args₂[i]!
-      if !info.isExplicit then
-        if (← isEtaUnassignedMVar a₁ <||> isEtaUnassignedMVar a₂) then
-          if (← Meta.isExprDefEqAux a₁ a₂) then
-            loop (i+1) postponed
-          else
-            pure none
-        else
-          loop (i+1) (postponed.push i)
-      else if (← Meta.isExprDefEqAux a₁ a₂) then
-        loop (i+1) postponed
-      else
-        pure none
+private def isDefEqArgsFirstPass
+    (paramInfo : Array ParamInfo) (args₁ args₂ : Array Expr) : MetaM DefEqArgsFirstPassResult := do
+  let mut postponedImplicit := #[]
+  let mut postponedHO := #[]
+  for i in [:paramInfo.size] do
+    let info := paramInfo[i]!
+    let a₁ := args₁[i]!
+    let a₂ := args₂[i]!
+    if info.dependsOnHigherOrderOutParam || info.higherOrderOutParam then
+      trace[Meta.isDefEq] "found messy {a₁} =?= {a₂}"
+      postponedHO := postponedHO.push i
+    else if info.isExplicit then
+      unless (← Meta.isExprDefEqAux a₁ a₂) do
+        return .failed
+    else if (← isEtaUnassignedMVar a₁ <||> isEtaUnassignedMVar a₂) then
+      unless (← Meta.isExprDefEqAux a₁ a₂) do
+        return .failed
     else
-      pure (some postponed)
-  loop 0 #[]
+      postponedImplicit := postponedImplicit.push i
+  return .ok postponedImplicit postponedHO
 
-private def trySynthPending (e : Expr) : MetaM Bool := do
-  let mvarId? ← getStuckMVar? e
-  match mvarId? with
-  | some mvarId => Meta.synthPending mvarId
-  | none        => pure false
-
-private partial def isDefEqArgs (f : Expr) (args₁ args₂ : Array Expr) : MetaM Bool :=
-  if h : args₁.size = args₂.size then do
-    let finfo ← getFunInfoNArgs f args₁.size
-    let (some postponed) ← isDefEqArgsFirstPass finfo.paramInfo args₁ args₂ | pure false
-    let rec processOtherArgs (i : Nat) : MetaM Bool := do
-      if h₁ : i < args₁.size then
-        let a₁ := args₁.get ⟨i, h₁⟩
-        let a₂ := args₂.get ⟨i, Eq.subst h h₁⟩
-        if (← Meta.isExprDefEqAux a₁ a₂) then
-          processOtherArgs (i+1)
-        else
-          pure false
-      else
-        pure true
-    if (← processOtherArgs finfo.paramInfo.size) then
-      postponed.allM fun i => do
-        /- Second pass: unify implicit arguments.
-           In the second pass, we make sure we are unfolding at
-           least non reducible definitions (default setting). -/
-        let a₁   := args₁[i]!
-        let a₂   := args₂[i]!
-        let info := finfo.paramInfo[i]!
-        if info.isInstImplicit then
-          discard <| trySynthPending a₁
-          discard <| trySynthPending a₂
-        withAtLeastTransparency TransparencyMode.default <| Meta.isExprDefEqAux a₁ a₂
+private partial def isDefEqArgs (f : Expr) (args₁ args₂ : Array Expr) : MetaM Bool := do
+  unless args₁.size == args₂.size do return false
+  let finfo ← getFunInfoNArgs f args₁.size
+  let .ok postponedImplicit postponedHO ← isDefEqArgsFirstPass finfo.paramInfo args₁ args₂ | pure false
+  -- finfo.paramInfo.size may be smaller than args₁.size
+  for i in [finfo.paramInfo.size:args₁.size] do
+    unless (← Meta.isExprDefEqAux args₁[i]! args₂[i]!) do
+      return false
+  for i in postponedImplicit do
+    /- Second pass: unify implicit arguments.
+       In the second pass, we make sure we are unfolding at
+       least non reducible definitions (default setting). -/
+    let a₁   := args₁[i]!
+    let a₂   := args₂[i]!
+    let info := finfo.paramInfo[i]!
+    if info.isInstImplicit then
+      discard <| trySynthPending a₁
+      discard <| trySynthPending a₂
+    unless (← withAtLeastTransparency TransparencyMode.default <| Meta.isExprDefEqAux a₁ a₂) do
+      return false
+  for i in postponedHO do
+    let a₁   := args₁[i]!
+    let a₂   := args₂[i]!
+    let info := finfo.paramInfo[i]!
+    if info.isInstImplicit then
+      unless (← withAtLeastTransparency TransparencyMode.default <| Meta.isExprDefEqAux a₁ a₂) do
+       return false
     else
-      pure false
-  else
-    pure false
+      unless (← Meta.isExprDefEqAux a₁ a₂) do
+        return false
+  return true
 
 /--
   Check whether the types of the free variables at `fvars` are
@@ -250,7 +289,7 @@ private partial def isDefEqArgs (f : Expr) (args₁ args₂ : Array Expr) : Meta
       k
   loop 0
 
-/- Auxiliary function for `isDefEqBinding` for handling binders `forall/fun`.
+/-- Auxiliary function for `isDefEqBinding` for handling binders `forall/fun`.
    It accumulates the new free variables in `fvars`, and declare them at `lctx`.
    We use the domain types of `e₁` to create the new free variables.
    We store the domain types of `e₂` at `ds₂`. -/
@@ -329,7 +368,7 @@ private partial def mkLambdaFVarsWithLetDeps (xs : Array Expr) (v : Expr) : Meta
     mkLambdaFVars ys v
 
 where
-  /- Return true if there are let-declarions between `xs[0]` and `xs[xs.size-1]`.
+  /-- Return true if there are let-declarions between `xs[0]` and `xs[xs.size-1]`.
      We use it a quick-check to avoid the more expensive collection procedure. -/
   hasLetDeclsInBetween : MetaM Bool := do
     let check (lctx : LocalContext) : Bool := Id.run do
@@ -347,7 +386,7 @@ where
     else
       return check (← getLCtx)
 
-  /- Traverse `e` and stores in the state `NameHashSet` any let-declaration with index greater than `(← read)`.
+  /-- Traverse `e` and stores in the state `NameHashSet` any let-declaration with index greater than `(← read)`.
      The context `Nat` is the position of `xs[0]` in the local context. -/
   collectLetDeclsFrom (e : Expr) : ReaderT Nat (StateRefT FVarIdHashSet MetaM) Unit := do
     let rec visit (e : Expr) : MonadCacheT Expr Unit (ReaderT Nat (StateRefT FVarIdHashSet MetaM)) Unit :=
@@ -366,7 +405,7 @@ where
         | _ => pure ()
     visit (← instantiateMVars e) |>.run
 
-  /-
+  /--
     Auxiliary definition for traversing all declarations between `xs[0]` ... `xs.back` backwards.
     The `Nat` argument is the current position in the local context being visited, and it is less than
     or equal to the position of `xs.back` in the local context.
@@ -388,7 +427,7 @@ where
             | _ =>  pure ()
           collectLetDepsAux i
 
-  /- Computes the set `ys`. It is a set of `FVarId`s, -/
+  /-- Computes the set `ys`. It is a set of `FVarId`s, -/
   collectLetDeps : MetaM FVarIdHashSet := do
     let lctx ← getLCtx
     let start := lctx.getFVar! xs[0]! |>.index
@@ -397,7 +436,7 @@ where
     let (_, s) ← collectLetDepsAux stop |>.run start |>.run s
     return s
 
-  /- Computes the array `ys` containing let-decls between `xs[0]` and `xs.back` that
+  /-- Computes the array `ys` containing let-decls between `xs[0]` and `xs.back` that
      some `x` in `xs` depends on. -/
   addLetDeps : MetaM (Array Expr) := do
     let lctx ← getLCtx
@@ -414,7 +453,7 @@ where
           ys := ys.push localDecl.toExpr
     return ys
 
-/-
+/-!
   Each metavariable is declared in a particular local context.
   We use the notation `C |- ?m : t` to denote a metavariable `?m` that
   was declared at the local context `C` with type `t` (see `MetavarDecl`).
@@ -700,7 +739,7 @@ mutual
               traceM `Meta.isDefEq.assign.readOnlyMVarWithBiggerLCtx <| addAssignmentInfo (mkMVar mvarId)
               throwCheckAssignmentFailure
 
-  /-
+  /--
     Auxiliary function used to "fix" subterms of the form `?m x_1 ... x_n` where `x_i`s are free variables,
     and one of them is out-of-scope.
     See `Expr.app` case at `check`.
@@ -851,14 +890,15 @@ def checkAssignment (mvarId : MVarId) (fvars : Array Expr) (v : Expr) : MetaM (O
 
 private def processAssignmentFOApproxAux (mvar : Expr) (args : Array Expr) (v : Expr) : MetaM Bool :=
   match v with
+  | .mdata _ e   => processAssignmentFOApproxAux mvar args e
   | Expr.app f a =>
     if args.isEmpty then
       pure false
     else
       Meta.isExprDefEqAux args.back a <&&> Meta.isExprDefEqAux (mkAppRange mvar 0 (args.size - 1) args) f
-  | _              => pure false
+  | _            => pure false
 
-/-
+/--
   Auxiliary method for applying first-order unification. It is an approximation.
   Remark: this method is trying to solve the unification constraint:
 
@@ -899,14 +939,14 @@ private partial def simpAssignmentArgAux : Expr → MetaM Expr
     | _          => pure e
   | e => pure e
 
-/- Auxiliary procedure for processing `?m a₁ ... aₙ =?= v`.
+/-- Auxiliary procedure for processing `?m a₁ ... aₙ =?= v`.
    We apply it to each `aᵢ`. It instantiates assigned metavariables if `aᵢ` is of the form `f[?n] b₁ ... bₘ`,
    and then removes metadata, and zeta-expand let-decls. -/
 private def simpAssignmentArg (arg : Expr) : MetaM Expr := do
   let arg ← if arg.getAppFn.hasExprMVar then instantiateMVars arg else pure arg
   simpAssignmentArgAux arg
 
-/- Assign `mvar := fun a_1 ... a_{numArgs} => v`.
+/-- Assign `mvar := fun a_1 ... a_{numArgs} => v`.
    We use it at `processConstApprox` and `isDefEqMVarSelf` -/
 private def assignConst (mvar : Expr) (numArgs : Nat) (v : Expr) : MetaM Bool := do
   let mvarDecl ← getMVarDecl mvar.mvarId!
@@ -1294,15 +1334,6 @@ private def expandDelayedAssigned? (t : Expr) : MetaM (Option Expr) := do
   if tArgs.size < fvars.size then return none
   return some (mkAppRange (mkMVar mvarIdPending) fvars.size tArgs.size tArgs)
 
-private def isSynthetic : Expr → MetaM Bool
-  | Expr.mvar mvarId => do
-    let mvarDecl ← getMVarDecl mvarId
-    match mvarDecl.kind with
-    | MetavarKind.synthetic       => pure true
-    | MetavarKind.syntheticOpaque => pure true
-    | MetavarKind.natural         => pure false
-  | _                  => pure false
-
 private def isAssignable : Expr → MetaM Bool
   | Expr.mvar mvarId => do let b ← isReadOnlyOrSyntheticOpaqueExprMVar mvarId; pure (!b)
   | _                => pure false
@@ -1358,7 +1389,7 @@ private def isDefEqProofIrrel (t s : Expr) : MetaM LBool := do
   else
     pure LBool.undef
 
-/- Try to solve constraint of the form `?m args₁ =?= ?m args₂`.
+/-- Try to solve constraint of the form `?m args₁ =?= ?m args₂`.
    - First try to unify `args₁` and `args₂`, and return true if successful
    - Otherwise, try to assign `?m` to a constant function of the form `fun x_1 ... x_n => ?n`
      where `?n` is a fresh metavariable. See `assignConst`. -/
@@ -1380,7 +1411,7 @@ private def isDefEqMVarSelf (mvar : Expr) (args₁ args₂ : Array Expr) : MetaM
     else
       pure false
 
-/- Remove unnecessary let-decls -/
+/-- Remove unnecessary let-decls -/
 private def consumeLet : Expr → Expr
   | e@(Expr.letE _ _ _ b _) => if b.hasLooseBVars then e else consumeLet b
   | e                       => e
@@ -1530,7 +1561,7 @@ private partial def isDefEqQuickOther (t s : Expr) : MetaM LBool := do
       else
         isDefEqQuickMVarMVar t s
 
--- Both `t` and `s` are terms of the form `?m ...`
+/-- Both `t` and `s` are terms of the form `?m ...` -/
 private partial def isDefEqQuickMVarMVar (t s : Expr) : MetaM LBool := do
   if s.isMVar && !t.isMVar then
      /- Solve `?m t =?= ?n` by trying first `?n := ?m t`.
@@ -1577,7 +1608,7 @@ private def isDefEqProj : Expr → Expr → MetaM Bool
   | v, Expr.proj structName 0 s => isDefEqSingleton structName s v
   | _, _ => pure false
 where
-  /- If `structName` is a structure with a single field and `(?m ...).1 =?= v`, then solve contraint as `?m ... =?= ⟨v⟩` -/
+  /-- If `structName` is a structure with a single field and `(?m ...).1 =?= v`, then solve contraint as `?m ... =?= ⟨v⟩` -/
   isDefEqSingleton (structName : Name) (s : Expr) (v : Expr) : MetaM Bool := do
     let ctorVal := getStructureCtor (← getEnv) structName
     if ctorVal.numFields != 1 then
@@ -1596,7 +1627,7 @@ where
     else
       return false
 
-/-
+/--
   Given applications `t` and `s` that are in WHNF (modulo the current transparency setting),
   check whether they are definitionally equal or not.
 -/
@@ -1625,7 +1656,7 @@ private def isDefEqUnitLike (t : Expr) (s : Expr) : MetaM Bool := do
     else
       return false
 
-/-
+/--
   The `whnf` procedure has support for unfolding class projections when the
   transparency mode is set to `.instances`. This method ensures the behavior
   of `whnf` and `isDefEq` is consistent in this transparency mode.

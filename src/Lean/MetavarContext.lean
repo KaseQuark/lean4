@@ -8,7 +8,7 @@ import Lean.LocalContext
 
 namespace Lean
 
-/-
+/-!
 The metavariable context stores metavariable declarations and their
 assignments. It is used in the elaborator, tactic framework, unifier
 (aka `isDefEq`), and type class resolution (TC). First, we list all
@@ -319,7 +319,7 @@ def getDelayedMVarAssignment? [Monad m] [MonadMCtx m] (mvarId : MVarId) : m (Opt
     markUsedAssignment
   return result?
 
-/- Given a sequence of delayed assignments
+/-- Given a sequence of delayed assignments
    ```
    mvarId₁ := mvarId₂ ...;
    ...
@@ -420,13 +420,19 @@ def hasAssignableMVar [Monad m] [MonadMCtx m] : Expr → m Bool
 def assignLevelMVar [MonadMCtx m] (mvarId : MVarId) (val : Level) : m Unit :=
   modifyMCtx fun m => { m with lAssignment := m.lAssignment.insert mvarId val, usedAssignment := true }
 
+/--
+Add `mvarId := x` to the metavariable assignment.
+This method does not check whether `mvarId` is already assigned, nor it checks whether
+a cycle is being introduced, or whether the expression has the right type.
+This is a low-level API, and it is safer to use `isDefEq (mkMVar mvarId) x`.
+-/
 def assignExprMVar [MonadMCtx m] (mvarId : MVarId) (val : Expr) : m Unit :=
   modifyMCtx fun m => { m with eAssignment := m.eAssignment.insert mvarId val, usedAssignment := true }
 
 def assignDelayedMVar [MonadMCtx m] (mvarId : MVarId) (fvars : Array Expr) (mvarIdPending : MVarId) : m Unit :=
   modifyMCtx fun m => { m with dAssignment := m.dAssignment.insert mvarId { fvars, mvarIdPending }, usedAssignment := true }
 
-/-
+/--
 Notes on artificial eta-expanded terms due to metavariables.
 We try avoid synthetic terms such as `((fun x y => t) a b)` in the output produced by the elaborator.
 This kind of term may be generated when instantiating metavariable assignments.
@@ -705,7 +711,7 @@ instance : Inhabited MetavarContext := ⟨{}⟩
 @[export lean_mk_metavar_ctx]
 def mkMetavarContext : Unit → MetavarContext := fun _ => {}
 
-/- Low level API for adding/declaring metavariable declarations.
+/-- Low level API for adding/declaring metavariable declarations.
    It is used to implement actions in the monads `MetaM`, `ElabM` and `TacticM`.
    It should not be used directly since the argument `(mvarId : MVarId)` is assumed to be "unique". -/
 def addExprMVarDecl (mctx : MetavarContext)
@@ -733,7 +739,7 @@ def addExprMVarDeclExp (mctx : MetavarContext) (mvarId : MVarId) (userName : Nam
     (type : Expr) (kind : MetavarKind) : MetavarContext :=
     addExprMVarDecl mctx mvarId userName lctx localInstances type kind
 
-/- Low level API for adding/declaring universe level metavariable declarations.
+/-- Low level API for adding/declaring universe level metavariable declarations.
    It is used to implement actions in the monads `MetaM`, `ElabM` and `TacticM`.
    It should not be used directly since the argument `(mvarId : MVarId)` is assumed to be "unique". -/
 def addLevelMVarDecl (mctx : MetavarContext) (mvarId : MVarId) : MetavarContext :=
@@ -770,7 +776,7 @@ def setMVarUserNameTemporarily (mctx : MetavarContext) (mvarId : MVarId) (userNa
   let decl := mctx.getDecl mvarId
   { mctx with decls := mctx.decls.insert mvarId { decl with userName := userName } }
 
-/- Update the type of the given metavariable. This function assumes the new type is
+/-- Update the type of the given metavariable. This function assumes the new type is
    definitionally equal to the current one -/
 def setMVarType (mctx : MetavarContext) (mvarId : MVarId) (type : Expr) : MetavarContext :=
   let decl := mctx.getDecl mvarId

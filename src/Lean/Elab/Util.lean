@@ -8,6 +8,7 @@ import Lean.Parser.Syntax
 import Lean.Parser.Extension
 import Lean.KeyedDeclsAttribute
 import Lean.Elab.Exception
+import Lean.Elab.InfoTree
 import Lean.DocString
 import Lean.DeclarationRange
 import Lean.Compiler.InitAttr
@@ -44,7 +45,7 @@ structure MacroStackElem where
 
 abbrev MacroStack := List MacroStackElem
 
-/- If `ref` does not have position information, then try to use macroStack -/
+/-- If `ref` does not have position information, then try to use macroStack -/
 def getBetterRef (ref : Syntax) (macroStack : MacroStack) : Syntax :=
   match ref.getPos? with
   | some _ => ref
@@ -203,6 +204,10 @@ def logException [Monad m] [MonadLog m] [AddMessageContext m] [MonadLiftT IO m] 
     unless isAbortExceptionId id do
       let name ← id.getName
       logError m!"internal exception: {name}"
+
+def withLogging [Monad m] [MonadLog m] [MonadExcept Exception m] [AddMessageContext m] [MonadLiftT IO m]
+    (x : m Unit) : m Unit := do
+  try x catch ex => logException ex
 
 @[inline] def trace [Monad m] [MonadLog m] [AddMessageContext m] [MonadOptions m] (cls : Name) (msg : Unit → MessageData) : m Unit := do
   if checkTraceOption (← getOptions) cls then

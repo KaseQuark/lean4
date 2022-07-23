@@ -8,7 +8,7 @@ import Lean.Parser.Syntax
 import Lean.Elab.Util
 
 namespace Lean.Elab.Term
-/-
+/--
 Expand `optional «precedence»` where
  «precedence» := leading_parser " : " >> precedenceParser -/
 def expandOptPrecedence (stx : Syntax) : MacroM (Option Nat) :=
@@ -33,7 +33,7 @@ structure ToParserDescrContext where
   catName  : Name
   first    : Bool
   leftRec  : Bool -- true iff left recursion is allowed
-  /- See comment at `Parser.ParserCategory`. -/
+  /-- See comment at `Parser.ParserCategory`. -/
   behavior : Parser.LeadingIdentBehavior
 
 abbrev ToParserDescrM := ReaderT ToParserDescrContext (StateRefT (Option Nat) TermElabM)
@@ -126,7 +126,7 @@ where
       | some stxNew => process stxNew
       | none => throwErrorAt stx "unexpected syntax kind of category `syntax`: {kind}"
 
-  /- Sequence (aka NullNode) -/
+  /-- Sequence (aka NullNode) -/
   processSeq (stx : Syntax) := do
     let args := stx.getArgs
     if (← checkLeftRec stx[0]) then
@@ -300,7 +300,7 @@ where
     | .str _ s => s ++ str
     | _ => str
 
-/- We assume a new syntax can be treated as an atom when it starts and ends with a token.
+/-- We assume a new syntax can be treated as an atom when it starts and ends with a token.
    Here are examples of atom-like syntax.
    ```
    syntax "(" term ")" : term
@@ -325,7 +325,7 @@ def resolveSyntaxKind (k : Name) : CommandElabM Name := do
   throwError "invalid syntax node kind '{k}'"
 
 @[builtinCommandElab «syntax»] def elabSyntax : CommandElab := fun stx => do
-  let `($[$doc?:docComment]? $attrKind:attrKind syntax $[: $prec? ]? $[(name := $name?)]? $[(priority := $prio?)]? $[$ps:stx]* : $catStx) ← pure stx
+  let `($[$doc?:docComment]? $[ @[ $attrInstances:attrInstance,* ] ]? $attrKind:attrKind syntax $[: $prec? ]? $[(name := $name?)]? $[(priority := $prio?)]? $[$ps:stx]* : $catStx) ← pure stx
     | throwUnsupportedSyntax
   let cat := catStx.getId.eraseMacroScopes
   unless (Parser.isParserCategory (← getEnv) cat) do
@@ -344,11 +344,14 @@ def resolveSyntaxKind (k : Name) : CommandElabM Name := do
   let catParserId := mkIdentFrom stx (cat.appendAfter "Parser")
   let (val, lhsPrec?) ← runTermElabM none fun _ => Term.toParserDescr syntaxParser cat
   let declName := mkIdentFrom stx name
+  let attrInstance ← `(attrInstance| $attrKind:attrKind $catParserId:ident $(quote prio):num)
+  let attrInstances := attrInstances.getD { elemsAndSeps := #[] }
+  let attrInstances := attrInstances.push attrInstance
   let d ← if let some lhsPrec := lhsPrec? then
-    `($[$doc?:docComment]? @[$attrKind:attrKind $catParserId:ident $(quote prio):num] def $declName:ident : Lean.TrailingParserDescr :=
+    `($[$doc?:docComment]? @[$attrInstances,*] def $declName:ident : Lean.TrailingParserDescr :=
         ParserDescr.trailingNode $(quote stxNodeKind) $(quote prec) $(quote lhsPrec) $val)
   else
-    `($[$doc?:docComment]? @[$attrKind:attrKind $catParserId:ident $(quote prio):num] def $declName:ident : Lean.ParserDescr :=
+    `($[$doc?:docComment]? @[$attrInstances,*] def $declName:ident : Lean.ParserDescr :=
         ParserDescr.node $(quote stxNodeKind) $(quote prec) $val)
   trace `Elab fun _ => d
   withMacroExpansion stx d <| elabCommand d

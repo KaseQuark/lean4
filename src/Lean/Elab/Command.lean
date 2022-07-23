@@ -239,7 +239,7 @@ private def elabCommandUsing (s : State) (stx : Syntax) : List (KeyedDeclsAttrib
       (withInfoTreeContext (mkInfoTree := mkInfoTree elabFn.declName stx) <| elabFn.value stx)
       (fun _ => do set s; elabCommandUsing s stx elabFns)
 
-/- Elaborate `x` with `stx` on the macro stack -/
+/-- Elaborate `x` with `stx` on the macro stack -/
 def withMacroExpansion {α} (beforeStx afterStx : Syntax) (x : CommandElabM α) : CommandElabM α :=
   withInfoContext (mkInfo := pure <| .ofMacroExpansionInfo { stx := beforeStx, output := afterStx, lctx := .empty }) do
     withReader (fun ctx => { ctx with macroStack := { before := beforeStx, after := afterStx } :: ctx.macroStack }) x
@@ -258,18 +258,6 @@ register_builtin_option showPartialSyntaxErrors : Bool := {
   defValue := false
   descr    := "show elaboration errors from partial syntax trees (i.e. after parser recovery)"
 }
-
-def withLogging (x : CommandElabM Unit) : CommandElabM Unit := do
-  try
-    x
-  catch ex => match ex with
-    | Exception.error _ _     => logException ex
-    | Exception.internal id _ =>
-      if isAbortExceptionId id then
-        pure ()
-      else
-        let idName ← liftIO <| id.getName;
-        logError m!"internal exception {idName}"
 
 builtin_initialize registerTraceClass `Elab.command
 

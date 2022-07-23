@@ -318,6 +318,9 @@ instance : ForIn m LocalContext LocalDecl where
 @[inline] def foldr (lctx : LocalContext) (f : LocalDecl → β → β) (init : β) : β :=
   Id.run <| lctx.foldrM f init
 
+def size (lctx : LocalContext) : Nat :=
+  lctx.foldl (fun n _ => n+1) 0
+
 @[inline] def findDecl? (lctx : LocalContext) (f : LocalDecl → Option β) : Option β :=
   Id.run <| lctx.findDeclM? f
 
@@ -338,7 +341,7 @@ partial def isSubPrefixOfAux (a₁ a₂ : PArray (Option LocalDecl)) (exceptFVar
       else false
   else true
 
-/- Given `lctx₁ - exceptFVars` of the form `(x_1 : A_1) ... (x_n : A_n)`, then return true
+/-- Given `lctx₁ - exceptFVars` of the form `(x_1 : A_1) ... (x_n : A_n)`, then return true
    iff there is a local context `B_1* (x_1 : A_1) ... B_n* (x_n : A_n)` which is a prefix
    of `lctx₂` where `B_i`'s are (possibly empty) sequences of local declarations. -/
 def isSubPrefixOf (lctx₁ lctx₂ : LocalContext) (exceptFVars : Array Expr := #[]) : Bool :=

@@ -649,8 +649,8 @@ where
   /- The `Bool` context is true iff we are inside of an "inaccessible" pattern. -/
   go (p : Expr) : ReaderT Bool TermElabM Expr := do
     match p with
-    | .forallE n d b _  => withLocalDecl n b.binderInfo (← go d) fun x => do mkForallFVars #[x] (← go (b.instantiate1 x))
-    | .lam n d b _      => withLocalDecl n b.binderInfo (← go d) fun x => do mkLambdaFVars #[x] (← go (b.instantiate1 x))
+    | .forallE n d b bi  => withLocalDecl n bi (← go d) fun x => do mkForallFVars #[x] (← go (b.instantiate1 x))
+    | .lam n d b bi      => withLocalDecl n bi (← go d) fun x => do mkLambdaFVars #[x] (← go (b.instantiate1 x))
     | .letE n t v b ..  => withLetDecl n (← go t) (← go v) fun x => do mkLetFVars #[x] (← go (b.instantiate1 x))
     | .app f a          => return mkApp (← go f) (← go a)
     | .proj _ _ b       => return p.updateProj! (← go b)
@@ -1086,14 +1086,16 @@ private def elabMatchAux (generalizing? : Option Bool) (discrStxs : Array Syntax
       -/
       withRef altLHS.ref do
         for d in altLHS.fvarDecls do
-            if d.hasExprMVar then
+          if d.hasExprMVar then
+            tryPostpone
             withExistingLocalDecls altLHS.fvarDecls do
-              tryPostpone
-              throwMVarError m!"invalid match-expression, type of pattern variable '{d.toExpr}' contains metavariables{indentExpr d.type}"
+              runPendingTacticsAt d.type
+              if (← instantiateMVars d.type).hasExprMVar then
+                throwMVarError m!"invalid match-expression, type of pattern variable '{d.toExpr}' contains metavariables{indentExpr d.type}"
         for p in altLHS.patterns do
-          if p.hasExprMVar then
+          if (← Match.instantiatePatternMVars p).hasExprMVar then
+            tryPostpone
             withExistingLocalDecls altLHS.fvarDecls do
-              tryPostpone
               throwMVarError m!"invalid match-expression, pattern contains metavariables{indentExpr (← p.toExpr)}"
         pure altLHS
     return (discrs, matchType, altLHSS, isDep, rhss)

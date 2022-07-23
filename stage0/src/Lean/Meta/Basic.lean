@@ -34,31 +34,31 @@ namespace Lean.Meta
 builtin_initialize isDefEqStuckExceptionId : InternalExceptionId ← registerInternalExceptionId `isDefEqStuck
 
 /--
-  Configuration flags for the `MetaM` monad.
-  Many of them are used to control the `isDefEq` function that checks whether two terms are definitionally equal or not.
-  Recall that when `isDefEq` is trying to check whether
-  `?m@C a₁ ... aₙ` and `t` are definitionally equal (`?m@C a₁ ... aₙ =?= t`), where
-  `?m@C` as a shorthand for `C |- ?m : t` where `t` is the type of `?m`.
-  We solve it using the assignment `?m := fun a₁ ... aₙ => t` if
-  1) `a₁ ... aₙ` are pairwise distinct free variables that are ​*not*​ let-variables.
-  2) `a₁ ... aₙ` are not in `C`
-  3) `t` only contains free variables in `C` and/or `{a₁, ..., aₙ}`
-  4) For every metavariable `?m'@C'` occurring in `t`, `C'` is a subprefix of `C`
-  5) `?m` does not occur in `t`
+Configuration flags for the `MetaM` monad.
+Many of them are used to control the `isDefEq` function that checks whether two terms are definitionally equal or not.
+Recall that when `isDefEq` is trying to check whether
+`?m@C a₁ ... aₙ` and `t` are definitionally equal (`?m@C a₁ ... aₙ =?= t`), where
+`?m@C` as a shorthand for `C |- ?m : t` where `t` is the type of `?m`.
+We solve it using the assignment `?m := fun a₁ ... aₙ => t` if
+1) `a₁ ... aₙ` are pairwise distinct free variables that are ​*not*​ let-variables.
+2) `a₁ ... aₙ` are not in `C`
+3) `t` only contains free variables in `C` and/or `{a₁, ..., aₙ}`
+4) For every metavariable `?m'@C'` occurring in `t`, `C'` is a subprefix of `C`
+5) `?m` does not occur in `t`
 -/
 structure Config where
   /--
     If `foApprox` is set to true, and some `aᵢ` is not a free variable,
-     then we use first-order unification
-     ```
-       ?m a_1 ... a_i a_{i+1} ... a_{i+k} =?= f b_1 ... b_k
-     ```
-     reduces to
-     ```
-       ?m a_1 ... a_i =?= f
-       a_{i+1}        =?= b_1
-       ...
-       a_{i+k}        =?= b_k
+    then we use first-order unification
+    ```
+      ?m a_1 ... a_i a_{i+1} ... a_{i+k} =?= f b_1 ... b_k
+    ```
+    reduces to
+    ```
+      ?m a_1 ... a_i =?= f
+      a_{i+1}        =?= b_1
+      ...
+      a_{i+k}        =?= b_k
     ```
   -/
   foApprox           : Bool := false
@@ -136,6 +136,34 @@ structure ParamInfo where
     This information affects the generation of congruence theorems.
   -/
   isDecInst      : Bool       := false
+  /--
+    `higherOrderOutParam` is true if this parameter is a higher-order output parameter
+    of local instance.
+    Example:
+    ```
+    getElem :
+      {Cont : Type u_1} → {Idx : Type u_2} → {Elem : Type u_3} →
+      {Dom : Cont → Idx → Prop} → [self : GetElem Cont Idx Elem Dom] →
+      (xs : Cont) → (i : Idx) → Dom xs i → Elem
+    ```
+    This flag is true for the parameter `Dom` because it is output parameter of
+    `[self : GetElem Cont Idx Elem Dom]`
+   -/
+  higherOrderOutParam : Bool  := false
+  /--
+    `dependsOnHigherOrderOutParam` is true if the type of this parameter depends on
+    the higher-order output parameter of a previous local instance.
+    Example:
+    ```
+    getElem :
+      {Cont : Type u_1} → {Idx : Type u_2} → {Elem : Type u_3} →
+      {Dom : Cont → Idx → Prop} → [self : GetElem Cont Idx Elem Dom] →
+      (xs : Cont) → (i : Idx) → Dom xs i → Elem
+    ```
+    This flag is true for the parameter with type `Dom xs i` since `Dom` is an output parameter
+    of the instance `[self : GetElem Cont Idx Elem Dom]`
+  -/
+  dependsOnHigherOrderOutParam : Bool := false
   deriving Inhabited
 
 def ParamInfo.isImplicit (p : ParamInfo) : Bool :=
