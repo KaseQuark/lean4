@@ -214,8 +214,10 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
       let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx
         (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos doc))
       let hOut := ctx.hOut
-      let request : JsonRpc.Request ApplyWorkspaceEditParams := { id := "applyEdit", method := "workspace/applyEdit", param := ret.params }
-      let _ := ←hOut.writeLspMessage request
+      let applyRequest : JsonRpc.Request ApplyWorkspaceEditParams := { id := "applyEdit", method := "workspace/applyEdit", param := ret.applyParams }
+      let _ := ←hOut.writeLspMessage applyRequest
+      let showRequest : JsonRpc.Request ShowDocumentParams := { id := "showDocument", method := "window/showDocument", param := ret.showParams }
+      let _ := ←hOut.writeLspMessage showRequest
       return some ret.commands
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)

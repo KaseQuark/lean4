@@ -142,6 +142,13 @@ structure ApplyWorkspaceEditParams where
   edit : WorkspaceEdit
   deriving ToJson
 
+structure ShowDocumentParams where
+  uri : DocumentUri
+  external? : Option Bool
+  takeFocus? : Option Bool
+  selection? : Option Range
+  deriving ToJson
+
 structure TextDocumentItem where
   uri : DocumentUri
   languageId : String

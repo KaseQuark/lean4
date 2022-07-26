@@ -126,8 +126,8 @@ structure LocateReturn where
   pathAfterConv : List Nat
 deriving Inhabited
 
-private def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn := Id.run do
-  let mut t := tParam
+private def locate (stx : Syntax) (pos : String.Pos) : LocateReturn := Id.run do
+  let mut t := Syntax.Traverser.fromSyntax stx
   let mut path := []
   let mut rangeList := []
 
@@ -152,11 +152,8 @@ private def locate (tParam : Syntax.Traverser) (pos : String.Pos) : LocateReturn
     t := newT
 
   -- go back up from found location to the first `conv` we find
-  t := t.up
   let mut pathAfterConv := []
-  let mut firstArg := reprint! t.cur.getArgs[0]!
-  pathAfterConv := path.head!::pathAfterConv
-  path := path.tail!
+  let mut firstArg := reprint! t.cur
   while !("conv".isPrefixOf firstArg) do
     t := t.up
     firstArg :=reprint! t.cur.getArgs[0]!
@@ -191,6 +188,13 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
   -- we are right after conv, we need to do something different here
   if pathAfterConv.length == 1 then
+
+    --if there is an empty conv body, we need to remove the newlines from the `=>`
+    if reprint! t.cur.getArgs[pathAfterConv.head! + 1]! == "" then
+      let newArrow := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) "=>\n"
+      t := t.setCur (t.cur.setArgs (List.append (t.cur.getArgs.toList.take pathAfterConv.head!) (newArrow::t.cur.getArgs.toList.drop (pathAfterConv.head! + 1))).toArray)
+
+
     --move up to find previous whitespace
     let mut pathBeforeConv' := pathBeforeConvParam.reverse
     let mut returnPath := []
@@ -200,7 +204,7 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       pathBeforeConv' := pathBeforeConv'.tail!
     t := t.up
 
-    --get whitespace and make new node
+    --get whitespace
     let argNr := pathBeforeConv'.head! - 1
     let prevArg := reprint! t.cur.getArgs[argNr]!
     let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
@@ -209,7 +213,6 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
     while "  ".isPrefixOf whitespaceLine do
       whitespace := whitespace ++ "  "
       whitespaceLine := whitespaceLine.drop 2
-    let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (value ++ "\n" ++ whitespace)
 
     -- move back down to `conv`
     t := t.down pathBeforeConv'.head!
@@ -222,6 +225,11 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
     t := t.down 0
     t := t.down 0
 
+    -- if the conv body is empty, we need to add the whitespace in front of the `enter`
+    let newNode := match reprint! t.cur.getArgs[0]! with
+      | "" => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (whitespace ++ value ++ "\n")
+      | _ => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (value ++ "\n" ++ whitespace)
+
     -- add new node to Syntax and move to the very top
     let newArgList := newNode::t.cur.getArgs.toList
     t := t.setCur (t.cur.setArgs newArgList.toArray)
@@ -232,7 +240,10 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
   -- we are anywhere else in the `conv` block
   else
-     -- move down to args of `conv`
+    --check if other tactics follow after the `conv` block
+    let nothingAfterConv := t.up.up.cur.getArgs.size - 1 == pathBeforeConvParam.reverse.tail!.head!
+
+    -- move down to args of `conv`
     for _ in [:3] do
       t := t.down pathAfterConv.head!
       pathAfterConv := pathAfterConv.tail!
@@ -249,6 +260,8 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       let right := value.drop 7
       newval := left ++ additionalArgs ++ ", " ++ right
       convsMerged := true
+
+
     --get whitespace from previous tactic and make new node
 
 
@@ -284,11 +297,17 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
         for _ in [:whitespace.length] do
         frontWhitespace := frontWhitespace ++ " "
 
-
-
     let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ newval ++ "\n" ++ whitespace)
     -- add new node to syntax and move to the very top
-    let argList := t.cur.getArgs.toList
+    let mut argList := []
+    --if there are no tactics after the conv block, we need to remove one `\n` from the last tactic
+    if nothingAfterConv then
+      let mut adjustedLastLine := (reprint! t.cur.getArgs[t.cur.getArgs.size - 1]!).dropRight 1
+      let adjustedLastNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) adjustedLastLine
+      argList := (adjustedLastNode::t.cur.getArgs.toList.reverse.tail!).reverse
+    else
+      argList := t.cur.getArgs.toList
+
     let newArgList := match convsMerged with
       | false => List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
       | true => List.append (argList.take (pathAfterConv.head!) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
@@ -300,12 +319,12 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
 structure ConvZoomReturn where
   commands : ConvZoomCommands
-  params : Lsp.ApplyWorkspaceEditParams
+  applyParams : Lsp.ApplyWorkspaceEditParams
+  showParams : Lsp.ShowDocumentParams
 
 def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p : String.Pos) (doc : Lean.Server.FileWorker.EditableDocument): MetaM ConvZoomReturn := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
   let mut expr := (getExprFromCodeWithInfos goalParam.type).head!
-  let mut ret := ""
   let mut retList := []
   -- generate list of commands for `enter`
   while !list.isEmpty do
@@ -322,31 +341,32 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
   if enterval.contains '0' then enterval := "Error: Not a valid conv target"
   if retList.isEmpty then enterval := ""
 
-  -- insert `enter [...]` string into syntax
-  let traverser := Syntax.Traverser.fromSyntax stx
-  let retval := (locate traverser p)
-  let inserted := syntaxInsert stx retval.pathBeforeConv retval.pathAfterConv enterval
-  let val := reprint! inserted
-
   let mut range := match stx.getRange? with
         | some x => x
         | none => panic! "could not get range"
 
+  -- insert `enter [...]` string into syntax
+  let located := (locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) })
+  let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval
+  let val := reprint! inserted
+
   -- insert new syntax into document
   let text := doc.meta.text
-  let part1 := text.source.take range.start.byteIdx
-  let part2 := text.source.drop (range.stop.byteIdx + 2)
-  let newsrc := part1 ++ val ++ part2
-
-  ret := ret ++ "--Result after inserting enter:\n"
-  ret := ret ++ "/-\n" ++ newsrc ++ "\n-/"
 
   let commands : ConvZoomCommands := { commands? := "" }
 
-  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos {byteIdx := range.stop.byteIdx + 2} }, newText := val}
+  let mut stop := range.stop.byteIdx + 2
+  if p.byteIdx == range.stop.byteIdx then stop := p.byteIdx + 1
+  if text.source.length == range.stop.byteIdx then stop := text.source.length
+
+  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := stop } }, newText := val }
   let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
-  let edit : Lsp.WorkspaceEdit := { changes? := none, documentChanges? := [textDocumentEdit].toArray , changeAnnotations? := none}
-  let params : Lsp.ApplyWorkspaceEditParams := { label? := none, edit := edit }
-  return { commands:= commands, params := params }
+  let edit : Lsp.WorkspaceEdit := { changes? := none, documentChanges? := [textDocumentEdit].toArray , changeAnnotations? := none }
+  let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
+
+  let showRange : Lsp.Range := { start := text.utf8PosToLspPos {byteIdx := 100}, «end» := text.utf8PosToLspPos {byteIdx := 101} }
+  let showParams : Lsp.ShowDocumentParams := { uri := doc.meta.uri, external? := none, takeFocus? := true, selection? := showRange }
+
+  return { commands := commands, applyParams := applyParams, showParams := showParams }
 
 end Lean.Widget
