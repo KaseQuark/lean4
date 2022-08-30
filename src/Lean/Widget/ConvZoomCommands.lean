@@ -260,11 +260,7 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       let right := value.drop 7
       newval := left ++ additionalArgs ++ ", " ++ right
       convsMerged := true
-
-
     --get whitespace from previous tactic and make new node
-
-
     /-let argNr := match pathAfterConv.head! with
       | 0 => 0
       | x => x - 1-/
@@ -320,7 +316,6 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 structure ConvZoomReturn where
   commands : ConvZoomCommands
   applyParams : Lsp.ApplyWorkspaceEditParams
-  showParams : Lsp.ShowDocumentParams
 
 def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p : String.Pos) (doc : Lean.Server.FileWorker.EditableDocument): MetaM ConvZoomReturn := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
@@ -364,9 +359,6 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
   let edit : Lsp.WorkspaceEdit := { changes? := none, documentChanges? := [textDocumentEdit].toArray , changeAnnotations? := none }
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
 
-  let showRange : Lsp.Range := { start := text.utf8PosToLspPos {byteIdx := 100}, «end» := text.utf8PosToLspPos {byteIdx := 101} }
-  let showParams : Lsp.ShowDocumentParams := { uri := doc.meta.uri, external? := none, takeFocus? := true, selection? := showRange }
-
-  return { commands := commands, applyParams := applyParams, showParams := showParams }
+  return { commands := commands, applyParams := applyParams }
 
 end Lean.Widget

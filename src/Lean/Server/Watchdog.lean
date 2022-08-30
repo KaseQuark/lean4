@@ -644,8 +644,6 @@ section MainLoop
         mainLoop (←runClientTask)
       | Message.response "applyEdit" _ =>
         mainLoop (←runClientTask)
-      | Message.response "showDocument" _ =>
-        mainLoop (←runClientTask)
       | _ => throwServerError "Got invalid JSON-RPC message"
     | ServerEvent.clientError e => throw e
     | ServerEvent.workerEvent fw ev =>
