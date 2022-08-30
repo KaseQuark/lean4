@@ -296,9 +296,12 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
     let newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ newval ++ "\n" ++ whitespace)
     -- add new node to syntax and move to the very top
     let mut argList := []
-    --if there are no tactics after the conv block, we need to remove one `\n` from the last tactic
+    --if there are no tactics after the conv block, we need to remove all but one `\n` from the last tactic
     if nothingAfterConv then
-      let mut adjustedLastLine := (reprint! t.cur.getArgs[t.cur.getArgs.size - 1]!).dropRight 1
+      let mut adjustedLastLine := reprint! t.cur.getArgs[t.cur.getArgs.size - 1]!
+      while adjustedLastLine.takeRight 1 == "\n" do
+        adjustedLastLine := adjustedLastLine.dropRight 1
+      adjustedLastLine := adjustedLastLine ++ "\n"
       let adjustedLastNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) adjustedLastLine
       argList := (adjustedLastNode::t.cur.getArgs.toList.reverse.tail!).reverse
     else
