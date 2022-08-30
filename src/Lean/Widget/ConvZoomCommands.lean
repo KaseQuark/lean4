@@ -12,23 +12,6 @@ import Lean.Data.Lsp.Utf16
 namespace Lean.Widget
 open Server
 
-open Except in
-/-- Get the raw subexpression withotu performing any instantiation. -/
-private def viewCoordRaw: Nat → Expr → Except String Expr
-  | 3, e                        => error s!"Can't viewRaw the type of {e}"
-  | 0, (Expr.app f _)       => ok f
-  | 1, (Expr.app _ a)       => ok a
-  | 0, (Expr.lam _ y _ _)     => ok y
-  | 1, (Expr.lam _ _ b _)     => ok b
-  | 0, (Expr.forallE _ y _ _) => ok y
-  | 1, (Expr.forallE _ _ b _) => ok b
-  | 0, (Expr.letE _ y _ _ _)  => ok y
-  | 1, (Expr.letE _ _ a _ _)  => ok a
-  | 2, (Expr.letE _ _ _ b _)  => ok b
-  | 0, (Expr.proj _ _ b)    => ok b
-  | n, (Expr.mdata _ a)     => viewCoordRaw n a
-  | c, e                        => error s!"Bad coordinate {c} for {e}"
-
 structure ConvZoomCommands where
   commands? : Option String
   deriving ToJson, FromJson
@@ -108,11 +91,8 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
       | Expr.mdata _ _ => return {expr := b, val? := none, listRest := listParam }
       | _ => return {expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
 
-  | _ =>
-    let retexpr := match (viewCoordRaw listParam.head! expr) with
-      | Except.error _ => expr
-      | Except.ok e => e
-    return { expr := retexpr, val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
+  | _ => do
+    return { expr := ←(Lean.Core.viewSubexpr listParam.head! expr), val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
 
 
 def reprint! (stx : Syntax) : String :=
@@ -260,14 +240,10 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       let right := value.drop 7
       newval := left ++ additionalArgs ++ ", " ++ right
       convsMerged := true
+
     --get whitespace from previous tactic and make new node
-    /-let argNr := match pathAfterConv.head! with
-      | 0 => 0
-      | x => x - 1-/
-    --for some reason the above does not work, might be fixed soon
     let mut argNr := pathAfterConv.head!
     if argNr != 0 then argNr := argNr - 1
-
     let prevArg := reprint! t.cur.getArgs[argNr]!
     let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
     let mut whitespace := ""
