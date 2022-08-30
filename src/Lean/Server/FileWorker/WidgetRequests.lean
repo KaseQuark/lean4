@@ -32,7 +32,7 @@ builtin_initialize
 structure ConvZoomParams where
   expr : SubexprInfo
   positionParams : Lsp.PlainGoalParams
-  deriving RpcEncoding
+  deriving RpcEncodable
 
 builtin_initialize
   registerBuiltinRpcProcedure
