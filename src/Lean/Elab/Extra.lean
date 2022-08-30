@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
 import Lean.Elab.App
+import Lean.Elab.BuiltinNotation
 
 /-! # Auxiliary elaboration functions: AKA custom elaborators -/
 
@@ -127,26 +128,57 @@ there is no coercion `Matrix Real 5 4` from `Matrix Real 4 8` and vice-versa, bu
 -/
 
 private inductive Tree where
-  | term  (ref : Syntax) (val : Expr)
-  | op    (ref : Syntax) (lazy : Bool) (f : Expr) (lhs rhs : Tree)
+  | /--
+    Leaf of the tree.
+    We store the `infoTrees` generated when elaborating `val`. These trees become
+    subtrees of the infotree nodes generated for `op` nodes.
+    -/
+    term (ref : Syntax) (infoTrees : Std.PersistentArray InfoTree) (val : Expr)
+  | /--
+    `ref` is the original syntax that expanded into `binop%`.
+    `macroName` is the `macro_rule` that produce the expansion. We store this information
+    here to make sure "go to definition" behaves similarly to notation defined without using `binop%` helper elaborator.
+    -/
+    op (ref : Syntax) (macroName : Name) (lazy : Bool) (f : Expr) (lhs rhs : Tree)
 
 private partial def toTree (s : Syntax) : TermElabM Tree := do
-  let s ← liftMacroM <| expandMacros s
+  /-
+  Remark: ew used to use `expandMacros` here, but this is a bad idiom
+  because we do not record the macro expansion information in the info tree.
+  We now manually expand the notation in the `go` function, and save
+  the macro declaration names in the `op` nodes.
+  -/
   let result ← go s
   synthesizeSyntheticMVars (mayPostpone := true)
   return result
 where
   go (s : Syntax) := do
     match s with
-    | `(binop% $f $lhs $rhs) => processOp (lazy := false) f lhs rhs
-    | `(binop_lazy% $f $lhs $rhs) => processOp (lazy := true) f lhs rhs
-    | `(($e)) => go e
+    | `(binop% $f $lhs $rhs) => processOp (lazy := false) s .anonymous f lhs rhs
+    | `(binop_lazy% $f $lhs $rhs) => processOp (lazy := true) s .anonymous f lhs rhs
+    | `(($e)) =>
+      if hasCDot e then
+        processLeaf s
+      else
+        go e
     | _ =>
-       return Tree.term s (← elabTerm s none)
+       match (← liftMacroM <| expandMacroImpl? (← getEnv) s) with
+       | some (macroName, s?) =>
+         let s' ← liftMacroM <| liftExcept s?
+         match s' with
+         | `(binop% $f $lhs $rhs) => processOp (lazy := false) s macroName f lhs rhs
+         | `(binop_lazy% $f $lhs $rhs) => processOp (lazy := true) s macroName f lhs rhs
+         | _  => processLeaf s
+       | none => processLeaf s
 
-  processOp (f lhs rhs : Syntax) (lazy : Bool) := do
+  processOp (ref : Syntax) (declName : Name) (f lhs rhs : Syntax) (lazy : Bool) := do
     let some f ← resolveId? f | throwUnknownConstant f.getId
-    return Tree.op s (lazy := lazy) f (← go lhs) (← go rhs)
+    return .op (lazy := lazy) ref declName f (← go lhs) (← go rhs)
+
+  processLeaf (s : Syntax) := do
+    let e ← elabTerm s none
+    let info ← getResetInfoTrees
+    return .term s info e
 
 -- Auxiliary function used at `analyze`
 private def hasCoe (fromType toType : Expr) : TermElabM Bool := do
@@ -184,8 +216,8 @@ where
    go (t : Tree) : StateRefT AnalyzeResult TermElabM Unit := do
      unless (← get).hasUncomparable do
        match t with
-       | Tree.op _ _ _ lhs rhs => go lhs; go rhs
-       | Tree.term _ val =>
+       | .op _ _ _ _ lhs rhs => go lhs; go rhs
+       | .term _ _ val =>
          let type ← instantiateMVars (← inferType val)
          unless isUnknow type do
            match (← get).max? with
@@ -200,14 +232,19 @@ where
                  trace[Elab.binop] "uncomparable types: {max}, {type}"
                  modify fun s => { s with hasUncomparable := true }
 
-private def mkOp (f : Expr) (lhs rhs : Expr) : TermElabM Expr :=
+private def mkOp (f : Expr) (lhs rhs : Expr) : TermElabM Expr := do
   elabAppArgs f #[] #[Arg.expr lhs, Arg.expr rhs] (expectedType? := none) (explicit := false) (ellipsis := false) (resultIsOutParamSupport := false)
 
 private def toExprCore (t : Tree) : TermElabM Expr := do
   match t with
-  | .term _ e               => return e
-  | .op ref true f lhs rhs  => withRef ref <| mkOp f (← toExprCore lhs) (← mkFunUnit (← toExprCore rhs))
-  | .op ref false f lhs rhs => withRef ref <| mkOp f (← toExprCore lhs) (← toExprCore rhs)
+  | .term _ trees e =>
+    modifyInfoState (fun s => { s with trees := s.trees ++ trees }); return e
+  | .op ref macroName true f lhs rhs  =>
+    withRef ref <| withInfoContext' ref (mkInfo := mkTermInfo macroName ref) do
+      mkOp f (← toExprCore lhs) (← mkFunUnit (← toExprCore rhs))
+  | .op ref macroName false f lhs rhs =>
+    withRef ref <| withInfoContext' ref (mkInfo := mkTermInfo macroName ref) do
+      mkOp f (← toExprCore lhs) (← toExprCore rhs)
 
 /--
   Auxiliary function to decide whether we should coerce `f`'s argument to `maxType` or not.
@@ -286,7 +323,7 @@ mutual
   where
     go (t : Tree) (f? : Option Expr) (lhs : Bool) (isPred : Bool) : TermElabM Tree := do
       match t with
-      | .op ref lazy f lhs rhs =>
+      | .op ref macroName lazy f lhs rhs =>
         /-
           We only keep applying coercions to `maxType` if `f` is predicate or
           `f` has a homogenous instance with `maxType`. See `hasHomogeneousInstance` for additional details.
@@ -294,12 +331,13 @@ mutual
           Remark: We assume `binrel%` elaborator is only used with homogenous predicates.
         -/
         if (← pure isPred <||> hasHomogeneousInstance f maxType) then
-          return Tree.op ref lazy f (← go lhs f true false) (← go rhs f false false)
+          return Tree.op ref macroName lazy f (← go lhs f true false) (← go rhs f false false)
         else
-          let lhs ← toExpr lhs none
-          let rhs ← toExpr rhs none
-          return Tree.term ref (← mkOp f lhs rhs)
-      | .term ref e       =>
+          let r ← withRef ref <| withInfoContext' ref (mkInfo := mkTermInfo macroName ref) do
+            mkOp f (← toExpr lhs none) (← toExpr rhs none)
+          let infoTrees ← getResetInfoTrees
+          return .term ref infoTrees r
+      | .term ref trees e =>
         let type ← instantiateMVars (← inferType e)
         trace[Elab.binop] "visiting {e} : {type} =?= {maxType}"
         if isUnknow type then
@@ -311,7 +349,7 @@ mutual
           return t
         else
           trace[Elab.binop] "added coercion: {e} : {type} => {maxType}"
-          withRef ref <| return Tree.term ref (← mkCoe maxType type e)
+          withRef ref <| return .term ref trees (← mkCoe maxType type e)
 
   private partial def toExpr (tree : Tree) (expectedType? : Option Expr) : TermElabM Expr := do
     let r ← analyze tree expectedType?
@@ -346,7 +384,7 @@ def elabBinRelCore (noProp : Bool) (stx : Syntax) (expectedType? : Option Expr) 
   | some f => withSynthesize (mayPostpone := true) do
     let lhs ← withRef stx[2] <| toTree stx[2]
     let rhs ← withRef stx[3] <| toTree stx[3]
-    let tree := Tree.op (lazy := false) stx f lhs rhs
+    let tree := Tree.op (lazy := false) stx .anonymous f lhs rhs
     let r ← analyze tree none
     trace[Elab.binrel] "hasUncomparable: {r.hasUncomparable}, maxType: {r.max?}"
     if r.hasUncomparable || r.max?.isNone then
@@ -380,63 +418,6 @@ where
 @[builtinTermElab binrel] def elabBinRel : TermElab := elabBinRelCore false
 
 @[builtinTermElab binrel_no_prop] def elabBinRelNoProp : TermElab := elabBinRelCore true
-
-/--
-  Decompose `e` into `(r, a, b)`.
-
-  Remark: it assumes the last two arguments are explicit. -/
-private def relation? (e : Expr) : MetaM (Option (Expr × Expr × Expr)) :=
-  if e.getAppNumArgs < 2 then
-    return none
-  else
-    return some (e.appFn!.appFn!, e.appFn!.appArg!, e.appArg!)
-
-/-- Step-wise reasoning over transitive relations.
-```
-calc
-  a = b := pab
-  b = c := pbc
-  ...
-  y = z := pyz
-```
-proves `a = z` from the given step-wise proofs. `=` can be replaced with any
-relation implementing the typeclass `Trans`. Instead of repeating the right-
-hand sides, subsequent left-hand sides can be replaced with `_`. -/
-@[builtinTermElab «calc»]
-def elabBinCalc : TermElab :=  fun stx expectedType? => do
-  let stepStxs := stx[1].getArgs
-  let mut proofs := #[]
-  let mut types  := #[]
-  for stepStx in stepStxs do
-    let type  ← elabType stepStx[0]
-    let some (_, lhs, _) ← relation? type |
-      throwErrorAt stepStx[0] "invalid 'calc' step, relation expected{indentExpr type}"
-    if types.size > 0 then
-      let some (_, _, prevRhs) ← relation? types.back | unreachable!
-      unless (← isDefEqGuarded lhs prevRhs) do
-        throwErrorAt stepStx[0] "invalid 'calc' step, left-hand-side is {indentD m!"{lhs} : {← inferType lhs}"}\nprevious right-hand-side is{indentD m!"{prevRhs} : {← inferType prevRhs}"}"
-    types := types.push type
-    let proof ← elabTermEnsuringType stepStx[2] type
-    synthesizeSyntheticMVars
-    proofs := proofs.push proof
-  let mut result := proofs[0]!
-  let mut resultType := types[0]!
-  for i in [1:proofs.size] do
-    let some (r, a, b) ← relation? resultType | unreachable!
-    let some (s, _, c) ← relation? (← instantiateMVars types[i]!) | unreachable!
-    let (α, β, γ)       := (← inferType a, ← inferType b, ← inferType c)
-    let (u_1, u_2, u_3) := (← getLevel α, ← getLevel β, ← getLevel γ)
-    let t ← mkFreshExprMVar (← mkArrow α (← mkArrow γ (mkSort levelZero)))
-    let selfType := mkAppN (Lean.mkConst ``Trans [u_1, u_2, u_3]) #[α, β, γ, r, s, t]
-    match (← trySynthInstance selfType) with
-    | LOption.some self =>
-      result := mkAppN (Lean.mkConst ``Trans.trans [u_1, u_2, u_3]) #[α, β, γ, r, s, t, self, a, b, c, result, proofs[i]!]
-      resultType := (← instantiateMVars (← inferType result)).headBeta
-      unless (← relation? resultType).isSome do
-        throwErrorAt stepStxs[i]! "invalid 'calc' step, step result is not a relation{indentExpr resultType}"
-    | _ => throwErrorAt stepStxs[i]! "invalid 'calc' step, failed to synthesize `Trans` instance{indentExpr selfType}"
-    pure ()
-  ensureHasType expectedType? result
 
 @[builtinTermElab defaultOrOfNonempty]
 def elabDefaultOrNonempty : TermElab :=  fun stx expectedType? => do

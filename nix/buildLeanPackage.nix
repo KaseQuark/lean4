@@ -36,7 +36,8 @@ with builtins; let
   modToAbsPath = mod: "${src}/${modToPath mod}";
   modToLean = mod: "${modToAbsPath mod}.lean";
   bareStdenv = ./bareStdenv;
-  mkBareDerivation = args@{ buildCommand, ... }: derivation (args // {
+  mkBareDerivation = args: derivation (args // {
+    name = lib.strings.sanitizeDerivationName args.name;
     stdenv = bareStdenv;
     inherit (stdenv) system;
     buildInputs = (args.buildInputs or []) ++ [ coreutils ];
@@ -44,7 +45,7 @@ with builtins; let
     args = [ "-c" ''
       source $stdenv/setup
       set -u
-      ${buildCommand}
+      ${args.buildCommand}
     '' ];
   });
   runBareCommand = name: args: buildCommand: mkBareDerivation (args // { inherit name buildCommand; });
@@ -207,7 +208,7 @@ with builtins; let
     if typeOf g == "string" then [g]
     else if g.glob == "one" then [g.mod]
     else if g.glob == "submodules" then submodules g.mod
-    else if g.glob == "andSubmodules" then [g] ++ submodules g.mod
+    else if g.glob == "andSubmodules" then [g.mod] ++ submodules g.mod
     else throw "unknown glob kind '${g}'";
   mods' = lib.foldr buildModAndDeps {} (concatMap expandGlob roots);
   allLinkFlags = lib.foldr (shared: acc: acc ++ [ "-L${shared}" "-l${shared.linkName or shared.name}" ]) linkFlags allNativeSharedLibs;

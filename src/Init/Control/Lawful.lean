@@ -50,13 +50,7 @@ class LawfulMonad (m : Type u → Type v) [Monad m] extends LawfulApplicative m 
   bind_assoc     (x : m α) (f : α → m β) (g : β → m γ) : x >>= f >>= g = x >>= fun x => f x >>= g
   map_pure g x    := (by rw [← bind_pure_comp, pure_bind])
   seq_pure g x    := (by rw [← bind_map]; simp [map_pure, bind_pure_comp])
-  seq_assoc x g h := (by
-    -- TODO: support for applying `symm` at `simp` arguments
-    have bind_pure_comp_symm {α β : Type u} (f : α → β) (x : m α) : f <$> x = x >>= fun a => pure (f a) := by
-      rw [bind_pure_comp]
-    have bind_map_symm {α β : Type u} (f : m (α → (β : Type u))) (x : m α) : f <*> x = f >>= (. <$> x) := by
-      rw [bind_map]
-    simp[bind_pure_comp_symm, bind_map_symm, bind_assoc, pure_bind])
+  seq_assoc x g h := (by simp [← bind_pure_comp, ← bind_map, bind_assoc, pure_bind])
 
 export LawfulMonad (bind_pure_comp bind_map pure_bind bind_assoc)
 attribute [simp] pure_bind bind_assoc
@@ -183,7 +177,7 @@ end ExceptT
 
 namespace ReaderT
 
-theorem ext [Monad m] {x y : ReaderT ρ m α} (h : ∀ ctx, x.run ctx = y.run ctx) : x = y := by
+theorem ext {x y : ReaderT ρ m α} (h : ∀ ctx, x.run ctx = y.run ctx) : x = y := by
   simp [run] at h
   exact funext h
 
@@ -192,34 +186,45 @@ theorem ext [Monad m] {x y : ReaderT ρ m α} (h : ∀ ctx, x.run ctx = y.run ct
 @[simp] theorem run_bind [Monad m] (x : ReaderT ρ m α) (f : α → ReaderT ρ m β) (ctx : ρ)
     : (x >>= f).run ctx = x.run ctx >>= λ a => (f a).run ctx := rfl
 
+@[simp] theorem run_mapConst [Monad m] (a : α) (x : ReaderT ρ m β) (ctx : ρ)
+    : (Functor.mapConst a x).run ctx = Functor.mapConst a (x.run ctx) := rfl
+
 @[simp] theorem run_map [Monad m] (f : α → β) (x : ReaderT ρ m α) (ctx : ρ)
     : (f <$> x).run ctx = f <$> x.run ctx := rfl
 
 @[simp] theorem run_monadLift [MonadLiftT n m] (x : n α) (ctx : ρ)
     : (monadLift x : ReaderT ρ m α).run ctx = (monadLift x : m α) := rfl
 
-@[simp] theorem run_monadMap [Monad m] [MonadFunctor n m] (f : {β : Type u} → n β → n β) (x : ReaderT ρ m α) (ctx : ρ)
+@[simp] theorem run_monadMap [MonadFunctor n m] (f : {β : Type u} → n β → n β) (x : ReaderT ρ m α) (ctx : ρ)
     : (monadMap @f x : ReaderT ρ m α).run ctx = monadMap @f (x.run ctx) := rfl
 
 @[simp] theorem run_read [Monad m] (ctx : ρ) : (ReaderT.read : ReaderT ρ m ρ).run ctx = pure ctx := rfl
 
-@[simp] theorem run_seq {α β : Type u} [Monad m] [LawfulMonad m] (f : ReaderT ρ m (α → β)) (x : ReaderT ρ m α) (ctx : ρ) : (f <*> x).run ctx = (f.run ctx <*> x.run ctx) := by
-  rw [seq_eq_bind (m := m)]; rfl
+@[simp] theorem run_seq {α β : Type u} [Monad m] (f : ReaderT ρ m (α → β)) (x : ReaderT ρ m α) (ctx : ρ)
+    : (f <*> x).run ctx = (f.run ctx <*> x.run ctx) := rfl
 
-@[simp] theorem run_seqRight [Monad m] [LawfulMonad m] (x : ReaderT ρ m α) (y : ReaderT ρ m β) (ctx : ρ) : (x *> y).run ctx = (x.run ctx *> y.run ctx) := by
-  rw [seqRight_eq_bind (m := m)]; rfl
+@[simp] theorem run_seqRight [Monad m] (x : ReaderT ρ m α) (y : ReaderT ρ m β) (ctx : ρ)
+    : (x *> y).run ctx = (x.run ctx *> y.run ctx) := rfl
 
-@[simp] theorem run_seqLeft [Monad m] [LawfulMonad m] (x : ReaderT ρ m α) (y : ReaderT ρ m β) (ctx : ρ) : (x <* y).run ctx = (x.run ctx <* y.run ctx) := by
-  rw [seqLeft_eq_bind (m := m)]; rfl
+@[simp] theorem run_seqLeft [Monad m] (x : ReaderT ρ m α) (y : ReaderT ρ m β) (ctx : ρ)
+    : (x <* y).run ctx = (x.run ctx <* y.run ctx) := rfl
+
+instance [Monad m] [LawfulFunctor m] : LawfulFunctor (ReaderT ρ m) where
+  id_map    := by intros; apply ext; simp
+  map_const := by intros; funext a b; apply ext; intros; simp [map_const]
+  comp_map  := by intros; apply ext; intros; simp [comp_map]
+
+instance [Monad m] [LawfulApplicative m] : LawfulApplicative (ReaderT ρ m) where
+  seqLeft_eq  := by intros; apply ext; intros; simp [seqLeft_eq]
+  seqRight_eq := by intros; apply ext; intros; simp [seqRight_eq]
+  pure_seq    := by intros; apply ext; intros; simp [pure_seq]
+  map_pure    := by intros; apply ext; intros; simp [map_pure]
+  seq_pure    := by intros; apply ext; intros; simp [seq_pure]
+  seq_assoc   := by intros; apply ext; intros; simp [seq_assoc]
 
 instance [Monad m] [LawfulMonad m] : LawfulMonad (ReaderT ρ m) where
-  id_map         := by intros; apply ext; intros; simp
-  map_const      := by intros; rfl
-  seqLeft_eq     := by intros; apply ext; intros; simp; apply LawfulApplicative.seqLeft_eq
-  seqRight_eq    := by intros; apply ext; intros; simp; apply LawfulApplicative.seqRight_eq
-  pure_seq       := by intros; apply ext; intros; simp; apply LawfulApplicative.pure_seq
-  bind_pure_comp := by intros; apply ext; intros; simp; apply LawfulMonad.bind_pure_comp
-  bind_map       := by intros; rfl
+  bind_pure_comp := by intros; apply ext; intros; simp [LawfulMonad.bind_pure_comp]
+  bind_map       := by intros; apply ext; intros; simp [bind_map]
   pure_bind      := by intros; apply ext; intros; simp
   bind_assoc     := by intros; apply ext; intros; simp
 

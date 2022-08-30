@@ -666,15 +666,6 @@ LEAN_SHARED lean_object* lean_apply_n(lean_object* f, unsigned n, lean_object** 
 /* Pre: n > 16 */
 LEAN_SHARED lean_object* lean_apply_m(lean_object* f, unsigned n, lean_object** args);
 
-/* Fixpoint */
-
-LEAN_SHARED lean_obj_res lean_fixpoint(lean_obj_arg rec, lean_obj_arg a);
-LEAN_SHARED lean_obj_res lean_fixpoint2(lean_obj_arg rec, lean_obj_arg a1, lean_obj_arg a2);
-LEAN_SHARED lean_obj_res lean_fixpoint3(lean_obj_arg rec, lean_obj_arg a1, lean_obj_arg a2, lean_obj_arg a3);
-LEAN_SHARED lean_obj_res lean_fixpoint4(lean_obj_arg rec, lean_obj_arg a1, lean_obj_arg a2, lean_obj_arg a3, lean_obj_arg a4);
-LEAN_SHARED lean_obj_res lean_fixpoint5(lean_obj_arg rec, lean_obj_arg a1, lean_obj_arg a2, lean_obj_arg a3, lean_obj_arg a4, lean_obj_arg a5);
-LEAN_SHARED lean_obj_res lean_fixpoint6(lean_obj_arg rec, lean_obj_arg a1, lean_obj_arg a2, lean_obj_arg a3, lean_obj_arg a4, lean_obj_arg a5, lean_obj_arg a6);
-
 /* Arrays of objects (low level API) */
 static inline lean_obj_res lean_alloc_array(size_t size, size_t capacity) {
     lean_array_object * o = (lean_array_object*)lean_alloc_object(sizeof(lean_array_object) + sizeof(void*)*capacity);
@@ -1697,6 +1688,10 @@ static inline uint64_t lean_usize_to_uint64(size_t a) { return ((uint64_t)a); }
 
 LEAN_SHARED lean_obj_res lean_float_to_string(double a);
 LEAN_SHARED double lean_float_scaleb(double a, b_lean_obj_arg b);
+LEAN_SHARED uint8_t lean_float_isnan(double a);
+LEAN_SHARED uint8_t lean_float_isfinite(double a);
+LEAN_SHARED uint8_t lean_float_isinf(double a);
+LEAN_SHARED lean_obj_res lean_float_frexp(double a);
 
 /* Boxing primitives */
 
@@ -1835,20 +1830,33 @@ static inline uint64_t lean_name_hash(b_lean_obj_arg n) {
 }
 
 /* float primitives */
- static inline uint8_t lean_float_to_uint8(double a) { return (uint8_t)a; }
- static inline uint16_t lean_float_to_uint16(double a) { return (uint16_t)a; }
- static inline uint32_t lean_float_to_uint32(double a) { return (uint32_t)a; }
- static inline uint64_t lean_float_to_uint64(double a) { return (uint64_t)a; }
- static inline size_t lean_float_to_usize(double a) { return (size_t)a; }
- static inline double lean_float_add(double a, double b) { return a + b; }
- static inline double lean_float_sub(double a, double b) { return a - b; }
- static inline double lean_float_mul(double a, double b) { return a * b; }
- static inline double lean_float_div(double a, double b) { return a / b; }
- static inline double lean_float_negate(double a) { return -a; }
- static inline uint8_t lean_float_beq(double a, double b) { return a == b; }
- static inline uint8_t lean_float_decLe(double a, double b) { return a <= b; }
- static inline uint8_t lean_float_decLt(double a, double b) { return a < b; }
- static inline double lean_uint64_to_float(uint64_t a) { return (double) a; }
+static inline uint8_t lean_float_to_uint8(double a) {
+    return 0. <= a ? (a < 256. ? (uint8_t)a : UINT8_MAX) : 0;
+}
+static inline uint16_t lean_float_to_uint16(double a) {
+    return 0. <= a ? (a < 65536. ? (uint16_t)a : UINT16_MAX) : 0;
+}
+static inline uint32_t lean_float_to_uint32(double a) {
+    return 0. <= a ? (a < 4294967296. ? (uint32_t)a : UINT32_MAX) : 0;
+}
+static inline uint64_t lean_float_to_uint64(double a) {
+    return 0. <= a ? (a < 18446744073709551616. ? (uint64_t)a : UINT64_MAX) : 0;
+}
+static inline size_t lean_float_to_usize(double a) {
+    if (sizeof(size_t) == sizeof(uint64_t)) // NOLINT
+        return (size_t) lean_float_to_uint64(a); // NOLINT
+    else
+        return (size_t) lean_float_to_uint32(a); // NOLINT
+}
+static inline double lean_float_add(double a, double b) { return a + b; }
+static inline double lean_float_sub(double a, double b) { return a - b; }
+static inline double lean_float_mul(double a, double b) { return a * b; }
+static inline double lean_float_div(double a, double b) { return a / b; }
+static inline double lean_float_negate(double a) { return -a; }
+static inline uint8_t lean_float_beq(double a, double b) { return a == b; }
+static inline uint8_t lean_float_decLe(double a, double b) { return a <= b; }
+static inline uint8_t lean_float_decLt(double a, double b) { return a < b; }
+static inline double lean_uint64_to_float(uint64_t a) { return (double) a; }
 
 #ifdef __cplusplus
 }

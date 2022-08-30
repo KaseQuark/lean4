@@ -6,12 +6,8 @@ Authors: Leonardo de Moura, Sebastian Ullrich
 import Lean.Data.Trie
 import Lean.Data.Position
 import Lean.Syntax
-import Lean.ToExpr
 import Lean.Environment
-import Lean.Attributes
 import Lean.Message
-import Lean.Compiler.InitAttr
-import Lean.ResolveName
 
 /-!
 # Basic Lean parser infrastructure
@@ -134,9 +130,6 @@ structure ParserContext extends InputContext, ParserModuleContext where
   suppressInsideQuot : Bool := false
   savedPos?          : Option String.Pos := none
   forbiddenTk?       : Option Token := none
-
-def ParserContext.resolveName (ctx : ParserContext) (id : Name) : List (Name × List String) :=
-  ResolveName.resolveGlobalName ctx.env ctx.currNamespace ctx.openDecls id
 
 structure Error where
   unexpected : String := ""
@@ -485,9 +478,14 @@ def mergeOrElseErrors (s : ParserState) (error1 : Error) (iniPos : String.Pos) (
     else s
   | other => other
 
--- When `mergeAntiquots` is true, if `p` parses an antiquotation, we try `q` as well and return a choice node if they
--- both return antiquotations
-def orelseFnCore (p q : ParserFn) (mergeAntiquots : Bool) : ParserFn := fun c s => Id.run do
+-- When `p` in `p <|> q` parses exactly one antiquotation, ...
+inductive OrElseOnAntiquotBehavior where
+  | acceptLhs    -- return it
+  | takeLongest  -- return result of `q` instead if it made more progress
+  | merge        -- ... and create choice node if both made the same progress
+  deriving BEq
+
+def orelseFnCore (p q : ParserFn) (antiquotBehavior := OrElseOnAntiquotBehavior.merge) : ParserFn := fun c s => Id.run do
   let s0     := s
   let iniSz  := s.stackSize
   let iniPos := s.pos
@@ -500,17 +498,24 @@ def orelseFnCore (p q : ParserFn) (mergeAntiquots : Bool) : ParserFn := fun c s 
       s
   | none =>
     let back := s.stxStack.back
-    if mergeAntiquots && back.isAntiquots then
+    if antiquotBehavior != .acceptLhs && s.stackSize == iniSz + 1 && back.isAntiquots then
       let s' := q c s0
-      if !s'.hasError && s'.stxStack.back.isAntiquot then
-        if back.isOfKind choiceKind then
-          s := { s with stxStack := s.stxStack.pop ++ back.getArgs }
-        s := s.pushSyntax s'.stxStack.back
-        s := s.mkNode choiceKind iniSz
+      if !s'.hasError then
+        -- If `q` made more progress than `p`, we prefer its result.
+        -- Thus `(structInstField| $id := $val) is interpreted as
+        -- `(structInstField| $id:ident := $val:term), not
+        -- `(structInstField| $id:structInstField <ERROR: expected ')'>.
+        if s'.pos > s.pos then
+          return s'
+        else if antiquotBehavior == .merge && s'.stackSize == iniSz + 1 && s'.stxStack.back.isAntiquot then
+          if back.isOfKind choiceKind then
+            s := { s with stxStack := s.stxStack.pop ++ back.getArgs }
+          s := s.pushSyntax s'.stxStack.back
+          s := s.mkNode choiceKind iniSz
     s
 
 @[inline] def orelseFn (p q : ParserFn) : ParserFn :=
-  orelseFnCore (mergeAntiquots := true) p q
+  orelseFnCore p q
 
 @[noinline] def orelseInfo (p q : ParserInfo) : ParserInfo := {
   collectTokens := p.collectTokens ∘ q.collectTokens,
@@ -905,12 +910,12 @@ where
     let curr  := input.get i
     if curr == 'e' || curr == 'E' then
       let i    := input.next i
-      let i    := if input.get i == '-' then input.next i else i
+      let i    := if input.get i == '-' || input.get i == '+' then input.next i else i
       let curr := input.get i
       if curr.isDigit then
         takeWhileFn (fun c => c.isDigit) c (s.setPos i)
       else
-        s.setPos i
+        s.mkUnexpectedError "missing exponent digits in scientific literal"
     else
       s
 
@@ -1551,6 +1556,8 @@ instance : Inhabited (TokenMap α) := ⟨RBMap.empty⟩
 
 instance : EmptyCollection (TokenMap α) := ⟨RBMap.empty⟩
 
+instance : ForIn m (TokenMap α) (Name × List α) := inferInstanceAs (ForIn _ (RBMap ..) _)
+
 end TokenMap
 
 structure PrattParsingTables where
@@ -1562,7 +1569,7 @@ structure PrattParsingTables where
 instance : Inhabited PrattParsingTables := ⟨{}⟩
 
 /--
-  The type `leadingIdentBehavior` specifies how the parsing table
+  The type `LeadingIdentBehavior` specifies how the parsing table
   lookup function behaves for identifiers.  The function `prattParser`
   uses two tables `leadingTable` and `trailingTable`. They map tokens
   to parsers.
@@ -1605,7 +1612,22 @@ inductive LeadingIdentBehavior where
   The method `termParser prec` is equivalent to the method above.
 -/
 structure ParserCategory where
-  tables   : PrattParsingTables
+  /-- The name of a declaration which will be used as the target of
+  go-to-definition queries and from which doc strings will be extracted.
+  This is a dummy declaration of type `Lean.Parser.Category`
+  created by `declare_syntax_cat`, but for builtin categories the declaration
+  is made manually and passed to `registerBuiltinParserAttribute`. -/
+  declName : Name
+  /-- The list of syntax nodes that can parse into this category.
+  This can be used to list all syntaxes in the category. -/
+  kinds    : SyntaxNodeKindSet := {}
+  /-- The parsing tables, which consist of a dynamic set of parser
+  functions based on the syntaxes that have been declared so far. -/
+  tables   : PrattParsingTables := {}
+  /-- The `LeadingIdentBehavior`, which specifies how the parsing table
+  lookup function behaves for the first identifier to be parsed.
+  This is used by the `tactic` parser to avoid creating a reserved
+  symbol for each builtin tactic (e.g., `apply`, `assumption`, etc.). -/
   behavior : LeadingIdentBehavior
   deriving Inhabited
 
@@ -1740,11 +1762,14 @@ def mkAntiquot (name : String) (kind : SyntaxNodeKind) (anonymous := true) (isPs
     checkNoWsBefore "no space before spliced term" >> antiquotExpr >>
     nameP
 
-@[inline] def withAntiquotFn (antiquotP p : ParserFn) : ParserFn := fun c s =>
+@[inline] def withAntiquotFn (antiquotP p : ParserFn) (isCatAntiquot := false) : ParserFn := fun c s =>
   -- fast check that is false in most cases
   if c.input.get s.pos == '$' then
-    -- do not allow antiquotation choice nodes here as `antiquotP` is the strictly more general antiquotation than any in `p`
-    orelseFnCore (mergeAntiquots := false) antiquotP p c s
+    -- Do not allow antiquotation choice nodes here as `antiquotP` is the strictly more general
+    -- antiquotation than any in `p`.
+    -- If it is a category antiquotation, do not backtrack into the category at all as that would
+    -- run *all* parsers of the category, and trailing parsers will later be applied anyway.
+    orelseFnCore (antiquotBehavior := if isCatAntiquot then .acceptLhs else .takeLongest) antiquotP p c s
   else
     p c s
 
@@ -1833,7 +1858,7 @@ def leadingParserAux (kind : Name) (tables : PrattParsingTables) (behavior : Lea
   mkResult s iniSz
 
 @[inline] def leadingParser (kind : Name) (tables : PrattParsingTables) (behavior : LeadingIdentBehavior) (antiquotParser : ParserFn) : ParserFn :=
-  withAntiquotFn antiquotParser (leadingParserAux kind tables behavior)
+  withAntiquotFn (isCatAntiquot := true) antiquotParser (leadingParserAux kind tables behavior)
 
 def trailingLoopStep (tables : PrattParsingTables) (left : Syntax) (ps : List (Parser × Nat)) : ParserFn := fun c s =>
   longestMatchFn left (ps ++ tables.trailingParsers) c s

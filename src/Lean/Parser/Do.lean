@@ -8,7 +8,7 @@ import Lean.Parser.Term
 namespace Lean
 namespace Parser
 
-builtin_initialize registerBuiltinParserAttribute `builtinDoElemParser `doElem
+builtin_initialize registerBuiltinParserAttribute `builtinDoElemParser ``Category.doElem
 builtin_initialize registerBuiltinDynamicParserAttribute `doElemParser `doElem
 
 @[inline] def doElemParser (rbp : Nat := 0) : Parser :=
@@ -36,7 +36,7 @@ def notFollowedByRedefinedTermToken :=
   notFollowedBy ("set_option" <|> "open" <|> "if" <|> "match" <|> "let" <|> "have" <|> "do" <|> "dbg_trace" <|> "assert!" <|> "for" <|> "unless" <|> "return" <|> symbol "try") "token at 'do' element"
 
 @[builtinDoElemParser] def doLet      := leading_parser "let " >> optional "mut " >> letDecl
-@[builtinDoElemParser] def doLetElse  := leading_parser "let " >> termParser >> " := " >> termParser >> checkColGt >> " | " >> doElemParser
+@[builtinDoElemParser] def doLetElse  := leading_parser "let " >> optional "mut " >> termParser >> " := " >> termParser >> checkColGt >> " | " >> doElemParser
 
 @[builtinDoElemParser] def doLetRec   := leading_parser group ("let " >> nonReservedSymbol "rec ") >> letRecDecls
 def doIdDecl   := leading_parser atomic (ident >> optType >> ppSpace >> leftArrow) >> doElemParser

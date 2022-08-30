@@ -16,7 +16,7 @@ private def implicitBinderF := Parser.Term.implicitBinder
 private def instBinderF     := Parser.Term.instBinder
 
 private def mkInhabitedInstanceUsing (inductiveTypeName : Name) (ctorName : Name) (addHypotheses : Bool) : CommandElabM Bool := do
-  match (← liftTermElabM none mkInstanceCmd?) with
+  match (← liftTermElabM mkInstanceCmd?) with
   | some cmd =>
     elabCommand cmd
     return true
@@ -56,7 +56,7 @@ where
           | _ => pure ()
       runST (fun _ => visit |>.run usedInstIdxs) |>.2
 
-  /- Create an `instance` command using the constructor `ctorName` with a hypothesis `Inhabited α` when `α` is one of the inductive type parameters
+  /-- Create an `instance` command using the constructor `ctorName` with a hypothesis `Inhabited α` when `α` is one of the inductive type parameters
      at position `i` and `i ∈ assumingParamIdxs`. -/
   mkInstanceCmdWith (assumingParamIdxs : IndexSet) : TermElabM Syntax := do
     let indVal ← getConstInfoInduct inductiveTypeName
@@ -123,7 +123,7 @@ def mkInhabitedInstanceHandler (declNames : Array Name) : CommandElabM Bool := d
     return false
 
 builtin_initialize
-  registerBuiltinDerivingHandler `Inhabited mkInhabitedInstanceHandler
+  registerDerivingHandler `Inhabited mkInhabitedInstanceHandler
   registerTraceClass `Elab.Deriving.inhabited
 
 end Lean.Elab

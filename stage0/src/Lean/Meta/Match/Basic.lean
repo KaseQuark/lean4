@@ -65,7 +65,7 @@ where
       let fields ← fields.mapM visit
       pure $ mkAppN (mkConst ctorName us) (params ++ fields).toArray
 
-/- Apply the free variable substitution `s` to the given pattern -/
+/-- Apply the free variable substitution `s` to the given pattern -/
 partial def applyFVarSubst (s : FVarSubst) : Pattern → Pattern
   | inaccessible e  => inaccessible $ s.apply e
   | ctor n us ps fs => ctor n us (ps.map s.apply) $ fs.map (applyFVarSubst s)
@@ -127,37 +127,67 @@ def instantiateAltLHSMVars (altLHS : AltLHS) : MetaM AltLHS :=
     patterns  := (← altLHS.patterns.mapM instantiatePatternMVars)
   }
 
+/-- `Match` alternative -/
 structure Alt where
+  /-- `Syntax` object for providing position information -/
   ref       : Syntax
-  idx       : Nat -- for generating error messages
+  /--
+  Orginal alternative index. Alternatives can be split, this index is the original
+  position of the alternative that generated this one.
+  -/
+  idx       : Nat
+  /--
+  Right-hand-side of the alternative.
+  -/
   rhs       : Expr
+  /--
+  Alternative pattern variables.
+  -/
   fvarDecls : List LocalDecl
+  /--
+  Alternative patterns.
+  -/
   patterns  : List Pattern
+  /--
+  Pending constraints `lhs ≋ rhs` that need to be solved before the alternative
+  is considered acceptable. We generate them when processing inaccessible patterns.
+  Note that `lhs` and `rhs` often have different types.
+  After we perform additional case analysis, their types become definitionally equal.
+  -/
+  cnstrs    : List (Expr × Expr)
   deriving Inhabited
 
 namespace Alt
 
 partial def toMessageData (alt : Alt) : MetaM MessageData := do
   withExistingLocalDecls alt.fvarDecls do
-    let msg : List MessageData := alt.fvarDecls.map fun d => m!"{d.toExpr}:({d.type})"
-    let msg : MessageData := m!"{msg} |- {alt.patterns.map Pattern.toMessageData} => {alt.rhs}"
+    let msg := alt.fvarDecls.map fun d => m!"{d.toExpr}:({d.type})"
+    let mut msg := m!"{msg} |- {alt.patterns.map Pattern.toMessageData} => {alt.rhs}"
+    for (lhs, rhs) in alt.cnstrs do
+      msg := m!"{msg}\n  | {lhs} ≋ {rhs}"
     addMessageContext msg
 
 def applyFVarSubst (s : FVarSubst) (alt : Alt) : Alt :=
   { alt with
     patterns  := alt.patterns.map fun p => p.applyFVarSubst s,
     fvarDecls := alt.fvarDecls.map fun d => d.applyFVarSubst s,
-    rhs       := alt.rhs.applyFVarSubst s }
+    rhs       := alt.rhs.applyFVarSubst s
+    cnstrs    := alt.cnstrs.map fun (lhs, rhs) => (lhs.applyFVarSubst s, rhs.applyFVarSubst s) }
 
 def replaceFVarId (fvarId : FVarId) (v : Expr) (alt : Alt) : Alt :=
   { alt with
     patterns  := alt.patterns.map fun p => p.replaceFVarId fvarId v,
+    rhs       := alt.rhs.replaceFVarId fvarId v
     fvarDecls :=
       let decls := alt.fvarDecls.filter fun d => d.fvarId != fvarId
-      decls.map $ replaceFVarIdAtLocalDecl fvarId v,
-    rhs       := alt.rhs.replaceFVarId fvarId v }
+      decls.map (·.replaceFVarId fvarId v)
+    cnstrs    := alt.cnstrs.map fun (lhs, rhs) => (lhs.replaceFVarId fvarId v, rhs.replaceFVarId fvarId v) }
 
-/-
+/-- Return `true` if `fvarId` is one of the alternative pattern variables -/
+def isLocalDecl (fvarId : FVarId) (alt : Alt) : Bool :=
+   alt.fvarDecls.any fun d => d.fvarId == fvarId
+
+/--
   Similar to `checkAndReplaceFVarId`, but ensures type of `v` is definitionally equal to type of `fvarId`.
   This extra check is necessary when performing dependent elimination and inaccessible terms have been used.
   For example, consider the following code fragment:
@@ -208,7 +238,7 @@ def checkAndReplaceFVarId (fvarId : FVarId) (v : Expr) (alt : Alt) : MetaM Alt :
       withExistingLocalDecls alt.fvarDecls do
         let (expectedType, givenType) ← addPPExplicitToExposeDiff vType fvarDecl.type
         throwErrorAt alt.ref "type mismatch during dependent match-elimination at pattern variable '{mkFVar fvarDecl.fvarId}' with type{indentExpr givenType}\nexpected type{indentExpr expectedType}"
-    pure $ replaceFVarId fvarId v alt
+    return replaceFVarId fvarId v alt
 
 end Alt
 
@@ -263,7 +293,7 @@ structure Problem where
   deriving Inhabited
 
 def withGoalOf {α} (p : Problem) (x : MetaM α) : MetaM α :=
-  withMVarContext p.mvarId x
+  p.mvarId.withContext x
 
 def Problem.toMessageData (p : Problem) : MetaM MessageData :=
   withGoalOf p do

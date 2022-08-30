@@ -1,4 +1,4 @@
-import Std
+import Bootstrap
 open Std
 open Lean
 
@@ -104,9 +104,9 @@ syntax entry := ident " ↦ " term:max
 syntax entry,* "⊢" term : term
 
 macro_rules
-  | `( $[$xs:ident ↦ $vs:term],* ⊢ $p:term ) =>
+  | `( $[$xs ↦ $vs],* ⊢ $p) =>
     let xs := xs.map fun x => quote x.getId.toString
-    `(denote (List.toAssocList [$[( $xs , $vs )],*]) `[BExpr| $p])
+    `(denote (List.toAssocList [$[($xs, $vs)],*]) `[BExpr| $p])
 
 #check b ↦ true ⊢ b ∨ b
 #eval  a ↦ false, b ↦ false ⊢ b ∨ a

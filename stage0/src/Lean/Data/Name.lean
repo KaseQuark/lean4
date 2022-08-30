@@ -100,14 +100,14 @@ def quickCmp (n₁ n₂ : Name) : Ordering :=
 def quickLt (n₁ n₂ : Name) : Bool :=
   quickCmp n₁ n₂ == Ordering.lt
 
-/- Alternative HasLt instance. -/
+/-- Alternative HasLt instance. -/
 @[inline] protected def hasLtQuick : LT Name :=
   ⟨fun a b => Name.quickLt a b = true⟩
 
 @[inline] instance : DecidableRel (@LT.lt Name Name.hasLtQuick) :=
   inferInstanceAs (DecidableRel (fun a b => Name.quickLt a b = true))
 
-/- The frontend does not allow user declarations to start with `_` in any of its parts.
+/-- The frontend does not allow user declarations to start with `_` in any of its parts.
    We use name parts starting with `_` internally to create auxiliary names (e.g., `_private`). -/
 def isInternal : Name → Bool
   | str p s => s.get 0 == '_' || isInternal p
@@ -153,6 +153,9 @@ def insert (m : NameMap α) (n : Name) (a : α) := Std.RBMap.insert m n a
 def contains (m : NameMap α) (n : Name) : Bool := Std.RBMap.contains m n
 
 @[inline] def find? (m : NameMap α) (n : Name) : Option α := Std.RBMap.find? m n
+
+instance : ForIn m (NameMap α) (Name × α) :=
+  inferInstanceAs (ForIn _ (Std.RBMap ..) ..)
 
 end NameMap
 

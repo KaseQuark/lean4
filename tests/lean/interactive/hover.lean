@@ -26,7 +26,12 @@ example : True := by
 
 /-- My way better tactic -/
 macro_rules
-  | `(tactic| mytac $[only]? $e) => `(tactic| apply $e)
+  | `(tactic| mytac $[only]? $e:term) =>
+    --^ textDocument/hover
+                              --^ textDocument/hover
+    `(tactic| apply $e:term)
+    --^ textDocument/hover
+                      --^ textDocument/hover
 
 example : True := by
   mytac only True.intro
@@ -42,7 +47,8 @@ example : True := by
 
 
 /-- My notation -/
-macro "mynota" e:term : term => pure e
+macro (name := myNota) "mynota" e:term : term => pure e
+              --^ textDocument/hover
 
 #check mynota 1
      --^ textDocument/hover
@@ -64,9 +70,25 @@ elab_rules : term
 #check mynota' 1
      --^ textDocument/hover
 
+@[inheritDoc]
+infix:65 (name := myInfix) " >+< " => Nat.add
+                   --^ textDocument/hover
+                                     --^ textDocument/hover
+
+#check 1 >+< 2
+        --^ textDocument/hover
+
+@[inheritDoc] notation "ℕ" => Nat
+
+#check ℕ
+     --^ textDocument/hover
 
 /-- My command -/
-macro "mycmd" e:term : command => `(def hi := $e)
+macro "mycmd" e:term : command => do
+  let seq ← `(Lean.Parser.Term.doSeq| $e:term)
+            --^ textDocument/hover
+  `(def hi := Id.run do $seq:doSeq)
+                            --^ textDocument/hover
 
 mycmd 1
 --^ textDocument/hover
@@ -78,7 +100,11 @@ macro_rules
 mycmd 1
 --^ textDocument/hover
 
-syntax "mycmd'" term : command
+syntax "mycmd'" ppSpace sepBy1(term, " + ") : command
+              --^ textDocument/hover
+                      --^ textDocument/hover
+                             --^ textDocument/hover
+
 /-- My ultimate command -/
 elab_rules : command
   | `(mycmd' $e) => do Lean.Elab.Command.elabCommand (← `(/-- hi -/ @[inline] def hi := $e))
@@ -160,3 +186,15 @@ def g (n : Nat) : Nat := g 0
 termination_by g n => n
 decreasing_by have n' := n; admit
                        --^ textDocument/hover
+
+@[inline]
+--^ textDocument/hover
+def one := 1
+
+example : True ∧ False := by
+  constructor
+  · constructor
+--^ textDocument/hover
+
+example : Nat := Id.run do (← 1)
+                          --^ textDocument/hover

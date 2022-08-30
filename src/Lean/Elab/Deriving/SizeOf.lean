@@ -17,12 +17,12 @@ open Command
 
 def mkSizeOfHandler (declNames : Array Name) : CommandElabM Bool := do
   if (← declNames.allM isInductive) && declNames.size > 0 then
-    liftTermElabM none <| Meta.mkSizeOfInstances declNames[0]!
+    liftTermElabM <| Meta.mkSizeOfInstances declNames[0]!
     return true
   else
     return false
 
 builtin_initialize
-  registerBuiltinDerivingHandler `SizeOf mkSizeOfHandler
+  registerDerivingHandler `SizeOf mkSizeOfHandler
 
 end Lean.Elab.Deriving.SizeOf

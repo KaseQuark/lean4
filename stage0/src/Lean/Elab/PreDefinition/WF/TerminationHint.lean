@@ -7,7 +7,7 @@ import Lean.Parser.Command
 
 namespace Lean.Elab.WF
 
-/- Support for `decreasing_by` and `termination_by'` notations -/
+/-! # Support for `decreasing_by` and `termination_by'` notations -/
 
 structure TerminationHintValue where
   ref   : Syntax
@@ -73,7 +73,7 @@ def TerminationHint.ensureAllUsed (t : TerminationHint) : MacroM Unit := do
   | TerminationHint.many m  => m.forM fun _ v => Macro.throwErrorAt v.ref "unused termination hint element"
   | _ => pure ()
 
-/- Support for `termination_by` notation -/
+/-! # Support for `termination_by` notation -/
 
 structure TerminationByElement where
   ref       : Syntax
@@ -98,7 +98,7 @@ inductive TerminationWF where
 
 /-
 ```
-def terminationByElement   := leading_parser ppLine >> (ident <|> "_") >> many (ident <|> "_") >> " => " >> termParser >> optional ";"
+def terminationByElement   := leading_parser ppLine >> (ident <|> hole) >> many (ident <|> hole) >> " => " >> termParser >> optional ";"
 def terminationBy          := leading_parser ppLine >> "termination_by " >> many1chIndent terminationByElement
 ```
 -/

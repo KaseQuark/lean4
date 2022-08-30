@@ -10,8 +10,8 @@ namespace Lean.Elab.Tactic.Conv
 open Meta
 
 @[builtinTactic Lean.Parser.Tactic.Conv.delta] def evalDelta : Tactic := fun stx => withMainContext do
-  let declName ← resolveGlobalConstNoOverload stx[1]
-  let lhsNew ← deltaExpand (← getLhs) (· == declName)
+  let declName ← resolveGlobalConstNoOverloadWithInfo stx[1]
+  let lhsNew ← deltaExpand (← instantiateMVars (← getLhs)) (· == declName)
   changeLhs lhsNew
 
 end Lean.Elab.Tactic.Conv

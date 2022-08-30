@@ -22,7 +22,7 @@ def mkJsonField (n : Name) : Bool × Term :=
 def mkToJsonInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
   if declNames.size == 1 then
     if isStructure (← getEnv) declNames[0]! then
-      let cmds ← liftTermElabM none <| do
+      let cmds ← liftTermElabM do
         let ctx ← mkContext "toJson" declNames[0]!
         let header ← mkHeader ``ToJson 1 ctx.typeInfos[0]!
         let fields := getStructureFieldsFlattened (← getEnv) declNames[0]! (includeSubobjectFields := false)
@@ -37,7 +37,7 @@ def mkToJsonInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
       return true
     else
       let indVal ← getConstInfoInduct declNames[0]!
-      let cmds ← liftTermElabM none <| do
+      let cmds ← liftTermElabM do
         let ctx ← mkContext "toJson" declNames[0]!
         let toJsonFuncId := mkIdent ctx.auxFunNames[0]!
         -- Return syntax to JSONify `id`, either via `ToJson` or recursively
@@ -91,7 +91,7 @@ where
       let mut userNames := #[]
       for i in [:ctorInfo.numFields] do
         let x := xs[indVal.numParams + i]!
-        let localDecl ← getLocalDecl x.fvarId!
+        let localDecl ← x.fvarId!.getDecl
         if !localDecl.userName.hasMacroScopes then
           userNames := userNames.push localDecl.userName
         let a := mkIdent (← mkFreshUserName `a)
@@ -104,7 +104,7 @@ where
 def mkFromJsonInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
   if declNames.size == 1 then
     if isStructure (← getEnv) declNames[0]! then
-      let cmds ← liftTermElabM none <| do
+      let cmds ← liftTermElabM do
         let ctx ← mkContext "fromJson" declNames[0]!
         let header ← mkHeader ``FromJson 0 ctx.typeInfos[0]!
         let fields := getStructureFieldsFlattened (← getEnv) declNames[0]! (includeSubobjectFields := false)
@@ -119,7 +119,7 @@ def mkFromJsonInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
       return true
     else
       let indVal ← getConstInfoInduct declNames[0]!
-      let cmds ← liftTermElabM none <| do
+      let cmds ← liftTermElabM do
         let ctx ← mkContext "fromJson" declNames[0]!
         let header ← mkHeader ``FromJson 0 ctx.typeInfos[0]!
         let fromJsonFuncId := mkIdent ctx.auxFunNames[0]!
@@ -154,7 +154,7 @@ where
         let mut userNames := #[]
         for i in [:ctorInfo.numFields] do
           let x := xs[indVal.numParams + i]!
-          let localDecl ← getLocalDecl x.fvarId!
+          let localDecl ← x.fvarId!.getDecl
           if !localDecl.userName.hasMacroScopes then
             userNames := userNames.push localDecl.userName
           let a := mkIdent (← mkFreshUserName `a)
@@ -182,7 +182,7 @@ where
   return alts.map Prod.fst
 
 builtin_initialize
-  registerBuiltinDerivingHandler ``ToJson mkToJsonInstanceHandler
-  registerBuiltinDerivingHandler ``FromJson mkFromJsonInstanceHandler
+  registerDerivingHandler ``ToJson mkToJsonInstanceHandler
+  registerDerivingHandler ``FromJson mkFromJsonInstanceHandler
 
 end Lean.Elab.Deriving.FromToJson

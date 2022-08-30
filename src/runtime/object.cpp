@@ -25,6 +25,20 @@ Author: Leonardo de Moura
 #include <unistd.h>
 #endif
 
+// HACK: for unknown reasons, std::isnan(x) fails on msys64 because math.h
+// is imported and isnan(x) looks like a macro. On the other hand, isnan(x)
+// fails on linux because <cmath> doesn't define it (as expected).
+// So we declare isnan(x) as a macro for std::isnan(x) if it doesn't already exist.
+#ifndef isnan
+#define isnan(x) std::isnan(x)
+#endif
+#ifndef isfinite
+#define isfinite(x) std::isfinite(x)
+#endif
+#ifndef isinf
+#define isinf(x) std::isinf(x)
+#endif
+
 // see `Task.Priority.max`
 #define LEAN_MAX_PRIO 8
 
@@ -67,6 +81,19 @@ extern "C" LEAN_EXPORT void lean_set_panic_messages(bool flag) {
     g_panic_messages = flag;
 }
 
+static void print_backtrace() {
+#ifdef __GLIBC__
+    void * bt_buf[100];
+    int nptrs = backtrace(bt_buf, sizeof(bt_buf) / sizeof(void *));
+    backtrace_symbols_fd(bt_buf, nptrs, STDERR_FILENO);
+    if (nptrs == sizeof(bt_buf)) {
+        std::cerr << "...\n";
+    }
+#else
+    std::cerr << "(stack trace unavailable)\n";
+#endif
+}
+
 extern "C" LEAN_EXPORT object * lean_panic_fn(object * default_val, object * msg) {
     // TODO(Leo, Kha): add thread local buffer for interpreter.
     if (g_panic_messages) {
@@ -75,12 +102,7 @@ extern "C" LEAN_EXPORT object * lean_panic_fn(object * default_val, object * msg
         char * bt_env = getenv("LEAN_BACKTRACE");
         if (!bt_env || strcmp(bt_env, "0") != 0) {
             std::cerr << "backtrace:\n";
-            void * bt_buf[100];
-            int nptrs = backtrace(bt_buf, sizeof(bt_buf));
-            backtrace_symbols_fd(bt_buf, nptrs, STDERR_FILENO);
-            if (nptrs == sizeof(bt_buf)) {
-                std::cerr << "...\n";
-            }
+            print_backtrace();
         }
 #endif
     }
@@ -1112,7 +1134,7 @@ extern "C" LEAN_EXPORT object * lean_nat_big_mod(object * a1, object * a2) {
             lean_inc(a1);
             return a1;
         } else {
-            return lean_box((mpz_value(a1) % mpz::of_size_t(n2)).get_unsigned_int());
+            return mpz_to_nat(mpz_value(a1) % mpz::of_size_t(n2));
         }
     } else {
         lean_assert(mpz_value(a2) != 0);
@@ -1454,7 +1476,12 @@ extern "C" LEAN_EXPORT usize lean_usize_mix_hash(usize a1, usize a2) {
 // Float
 
 extern "C" LEAN_EXPORT lean_obj_res lean_float_to_string(double a) {
-    return mk_string(std::to_string(a));
+    if (isnan(a))
+        // override NaN because we don't want NaNs to be distinguishable
+        // because the sign bit / payload bits can be architecture-dependent
+        return mk_string("NaN");
+    else
+        return mk_string(std::to_string(a));
 }
 
 extern "C" LEAN_EXPORT double lean_float_scaleb(double a, b_lean_obj_arg b) {
@@ -1465,6 +1492,17 @@ extern "C" LEAN_EXPORT double lean_float_scaleb(double a, b_lean_obj_arg b) {
    } else {
      return a * (1.0 / 0.0);
    }
+}
+
+extern "C" LEAN_EXPORT uint8_t lean_float_isnan(double a) { return (bool) isnan(a); }
+extern "C" LEAN_EXPORT uint8_t lean_float_isfinite(double a) { return (bool) isfinite(a); }
+extern "C" LEAN_EXPORT uint8_t lean_float_isinf(double a) { return (bool) isinf(a); }
+extern "C" LEAN_EXPORT obj_res lean_float_frexp(double a) {
+    object* r = lean_alloc_ctor(0, 2, 0);
+    int exp;
+    lean_ctor_set(r, 0, lean_box_float(frexp(a, &exp)));
+    lean_ctor_set(r, 1, isfinite(a) ? lean_int_to_int(exp) : lean_box(0));
+    return r;
 }
 
 // =======================================
@@ -1979,7 +2017,6 @@ extern "C" LEAN_EXPORT obj_res lean_float_array_data(obj_arg a) {
     double * end   = it+sz;
     object ** dest = lean_array_cptr(r);
     for (; it != end; ++it, ++dest) {
-        lean_dec(*dest);
         *dest = lean_box_float(*it);
     }
     lean_dec(a);
@@ -2134,6 +2171,11 @@ extern "C" LEAN_EXPORT object * lean_dbg_trace_if_shared(obj_arg s, obj_arg a) {
         io_eprintln(mk_string(std::string("shared RC ") + lean_string_cstr(s)));
     }
     return a;
+}
+
+extern "C" LEAN_EXPORT object * lean_dbg_stack_trace(obj_arg fn) {
+    print_backtrace();
+    return lean_apply_1(fn, lean_box(0));
 }
 
 // =======================================

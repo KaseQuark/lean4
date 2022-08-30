@@ -6,6 +6,7 @@ Authors: Leonardo de Moura
 import Lean.Parser.Term
 import Lean.Meta.Closure
 import Lean.Meta.Check
+import Lean.Meta.Transform
 import Lean.PrettyPrinter.Delaborator.Options
 import Lean.Elab.Command
 import Lean.Elab.Match
@@ -20,13 +21,23 @@ open Lean.Parser.Term
 structure DefViewElabHeader where
   ref           : Syntax
   modifiers     : Modifiers
+  /-- Stores whether this is the header of a definition, theorem, ... -/
   kind          : DefKind
+  /--
+    Short name. Recall that all declarations in Lean 4 are potentially recursive. We use `shortDeclName` to refer
+    to them at `valueStx`, and other declarations in the same mutual block. -/
   shortDeclName : Name
+  /-- Full name for this declaration. This is the name that will be added to the `Environment`. -/
   declName      : Name
+  /-- Universe level parameter names explicitly provided by the user. -/
   levelNames    : List Name
+  /-- Syntax objects for the binders occurring befor `:`, we use them to populate the `InfoTree` when elaborating `valueStx`. -/
   binderIds     : Array Syntax
+  /-- Number of parameters before `:`, it also includes auto-implicit parameters automatically added by Lean. -/
   numParams     : Nat
-  type          : Expr -- including the parameters
+  /-- Type including parameters. -/
+  type          : Expr
+  /-- `Syntax` object the body/value of the definition. -/
   valueStx      : Syntax
   deriving Inhabited
 
@@ -68,7 +79,7 @@ private def check (prevHeaders : Array DefViewElabHeader) (newHeader : DefViewEl
       checkModifiers newHeader.modifiers firstHeader.modifiers
       checkKinds newHeader.kind firstHeader.kind
     catch
-       | Exception.error ref msg => throw (Exception.error ref m!"invalid mutually recursive definitions, {msg}")
+       | .error ref msg => throw (.error ref m!"invalid mutually recursive definitions, {msg}")
        | ex => throw ex
   else
     pure ()
@@ -83,7 +94,7 @@ private def registerFailedToInferDefTypeInfo (type : Expr) (ref : Syntax) : Term
   ```  -/
 private def isMultiConstant? (views : Array DefView) : Option (List Name) :=
   if views.size == 1 &&
-     views[0]!.kind == DefKind.opaque &&
+     views[0]!.kind == .opaque &&
      views[0]!.binders.getArgs.size > 0 &&
      views[0]!.binders.getArgs.all (·.isIdent) then
     some (views[0]!.binders.getArgs.toList.map (·.getId))
@@ -99,6 +110,23 @@ private def getPendindMVarErrorMessage (views : Array DefView) : String :=
   | none =>
     "\nwhen the resulting type of a declaration is explicitly provided, all holes (e.g., `_`) in the header are resolved before the declaration body is processed"
 
+/--
+Convert terms of the form `OfNat <type> (OfNat.ofNat Nat <num> ..)` into `OfNat <type> <num>`.
+We use this method on instance declaration types.
+The motivation is to address a recurrent mistake when users forget to use `nat_lit` when declaring `OfNat` instances.
+See issues #1389 and #875
+-/
+private def cleanupOfNat (type : Expr) : MetaM Expr := do
+  Meta.transform type fun e => do
+    if !e.isAppOfArity ``OfNat 2 then return .continue
+    let arg ← instantiateMVars e.appArg!
+    if !arg.isAppOfArity ``OfNat.ofNat 3 then return .continue
+    let argArgs := arg.getAppArgs
+    if !argArgs[0]!.isConstOf ``Nat then return .continue
+    let eNew := mkApp e.appFn! argArgs[1]!
+    return .done eNew
+
+/-- Elaborate only the declaration headers. We have to elaborate the headers first because we support mutually recursive declarations in Lean 4. -/
 private def elabHeaders (views : Array DefView) : TermElabM (Array DefViewElabHeader) := do
   let expandedDeclIds ← views.mapM fun view => withRef view.ref do
     Term.expandDeclId (← getCurrNamespace) (← getLevelNames) view.declId view.modifiers
@@ -107,11 +135,11 @@ private def elabHeaders (views : Array DefView) : TermElabM (Array DefViewElabHe
     for view in views, ⟨shortDeclName, declName, levelNames⟩ in expandedDeclIds do
       let newHeader ← withRef view.ref do
         addDeclarationRanges declName view.ref
-        applyAttributesAt declName view.modifiers.attrs AttributeApplicationTime.beforeElaboration
+        applyAttributesAt declName view.modifiers.attrs .beforeElaboration
         withDeclName declName <| withAutoBoundImplicit <| withLevelNames levelNames <|
           elabBindersEx view.binders.getArgs fun xs => do
             let refForElabFunType := view.value
-            let type ← match view.type? with
+            let mut type ← match view.type? with
               | some typeStx =>
                 let type ← elabType typeStx
                 registerFailedToInferDefTypeInfo type typeStx
@@ -123,32 +151,36 @@ private def elabHeaders (views : Array DefView) : TermElabM (Array DefViewElabHe
                 registerFailedToInferDefTypeInfo type refForElabFunType
                 pure type
             Term.synthesizeSyntheticMVarsNoPostponing
+            if view.isInstance then
+              type ← cleanupOfNat type
             let (binderIds, xs) := xs.unzip
             -- TODO: add forbidden predicate using `shortDeclName` from `views`
             let xs ← addAutoBoundImplicits xs
-            let type ← mkForallFVars' xs type
-            let type ← instantiateMVars type
+            type ← mkForallFVars' xs type
+            type ← instantiateMVars type
             let levelNames ← getLevelNames
             if view.type?.isSome then
               let pendingMVarIds ← getMVars type
               discard <| logUnassignedUsingErrorInfos pendingMVarIds <|
                 getPendindMVarErrorMessage views
             let newHeader := {
-              ref           := view.ref,
-              modifiers     := view.modifiers,
-              kind          := view.kind,
-              shortDeclName := shortDeclName,
-              declName      := declName,
-              levelNames    := levelNames,
-              binderIds     := binderIds,
-              numParams     := xs.size,
-              type          := type,
+              ref           := view.ref
+              modifiers     := view.modifiers
+              kind          := view.kind
+              shortDeclName := shortDeclName
+              declName, type, levelNames, binderIds
+              numParams     := xs.size
               valueStx      := view.value : DefViewElabHeader }
             check headers newHeader
             return newHeader
       headers := headers.push newHeader
     return headers
 
+/--
+  Create auxiliary local declarations `fs` for the given hearders using their `shortDeclName` and `type`, given hearders, and execute `k fs`.
+  The new free variables are tagged as `auxDecl`.
+  Remark: `fs.size = headers.size`.
+-/
 private partial def withFunLocalDecls {α} (headers : Array DefViewElabHeader) (k : Array Expr → TermElabM α) : TermElabM α :=
   let rec loop (i : Nat) (fvars : Array Expr) := do
     if h : i < headers.size then
@@ -164,15 +196,17 @@ private partial def withFunLocalDecls {α} (headers : Array DefViewElabHeader) (
 private def expandWhereStructInst : Macro
   | `(Parser.Command.whereStructInst|where $[$decls:letDecl];* $[$whereDecls?:whereDecls]?) => do
     let letIdDecls ← decls.mapM fun stx => match stx with
-      | `(letDecl|$_decl:letPatDecl)  => Macro.throwErrorAt stx "patterns are not allowed here"
-      | `(letDecl|$decl:letEqnsDecl) => expandLetEqnsDecl decl
+      | `(letDecl|$_decl:letPatDecl) => Macro.throwErrorAt stx "patterns are not allowed here"
+      | `(letDecl|$decl:letEqnsDecl) => expandLetEqnsDecl decl (useExplicit := false)
       | `(letDecl|$decl:letIdDecl)   => pure decl
-      | _                               => Macro.throwUnsupported
+      | _                            => Macro.throwUnsupported
     let structInstFields ← letIdDecls.mapM fun
       | stx@`(letIdDecl|$id:ident $binders* $[: $ty?]? := $val) => withRef stx do
         let mut val := val
         if let some ty := ty? then
           val ← `(($val : $ty))
+        -- HACK: this produces invalid syntax, but the fun elaborator supports letIdBinders as well
+        have : Coe (TSyntax ``letIdBinder) (TSyntax ``funBinder) := ⟨(⟨·⟩)⟩
         val ← if binders.size > 0 then `(fun $binders* => $val) else pure val
         `(structInstField|$id:ident := $val)
       | _ => Macro.throwUnsupported
@@ -191,11 +225,11 @@ def declVal          := declValSimple <|> declValEqns <|> Term.whereDecls
 ```
 -/
 private def declValToTerm (declVal : Syntax) : MacroM Syntax := withRef declVal do
-  if declVal.isOfKind ``Lean.Parser.Command.declValSimple then
+  if declVal.isOfKind ``Parser.Command.declValSimple then
     expandWhereDeclsOpt declVal[2] declVal[1]
-  else if declVal.isOfKind ``Lean.Parser.Command.declValEqns then
+  else if declVal.isOfKind ``Parser.Command.declValEqns then
     expandMatchAltsWhereDecls declVal[0]
-  else if declVal.isOfKind ``Lean.Parser.Command.whereStructInst then
+  else if declVal.isOfKind ``Parser.Command.whereStructInst then
     expandWhereStructInst declVal
   else if declVal.isMissing then
     Macro.throwErrorAt declVal "declaration body is missing"
@@ -244,7 +278,7 @@ private def instantiateMVarsAtHeader (header : DefViewElabHeader) : TermElabM De
 private def instantiateMVarsAtLetRecToLift (toLift : LetRecToLift) : TermElabM LetRecToLift := do
   let type ← instantiateMVars toLift.type
   let val ← instantiateMVars toLift.val
-  pure { toLift with type := type, val := val }
+  pure { toLift with type, val }
 
 private def typeHasRecFun (type : Expr) (funFVars : Array Expr) (letRecsToLift : List LetRecToLift) : Option FVarId :=
   let occ? := type.find? fun e => match e with
@@ -255,13 +289,13 @@ private def typeHasRecFun (type : Expr) (funFVars : Array Expr) (letRecsToLift :
   | _ => none
 
 private def getFunName (fvarId : FVarId) (letRecsToLift : List LetRecToLift) : TermElabM Name := do
-  match (← findLocalDecl? fvarId) with
-  | some decl => pure decl.userName
+  match (← fvarId.findDecl?) with
+  | some decl => return decl.userName
   | none =>
     /- Recall that the FVarId of nested let-recs are not in the current local context. -/
     match letRecsToLift.findSome? fun toLift => if toLift.fvarId == fvarId then some toLift.shortDeclName else none with
     | none   => throwError "unknown function"
-    | some n => pure n
+    | some n => return n
 
 /--
 Ensures that the of let-rec definition types do not contain functions being defined.
@@ -393,14 +427,14 @@ private def merge (s₁ s₂ : FVarIdSet) : M FVarIdSet :=
 private def updateUsedVarsOf (fvarId : FVarId) : M Unit := do
   let usedFVarsMap ← getUsedFVarsMap
   match usedFVarsMap.find? fvarId with
-  | none         => pure ()
+  | none         => return ()
   | some fvarIds =>
-    let fvarIdsNew ← fvarIds.foldM (init := fvarIds) fun fvarIdsNew fvarId' =>
+    let fvarIdsNew ← fvarIds.foldM (init := fvarIds) fun fvarIdsNew fvarId' => do
       if fvarId == fvarId' then
-        pure fvarIdsNew
+        return fvarIdsNew
       else
         match usedFVarsMap.find? fvarId' with
-        | none => pure fvarIdsNew
+        | none => return fvarIdsNew
           /- We are being sloppy here `otherFVarIds` may contain free variables that are
              not in the context of the let-rec associated with fvarId.
              We filter these out-of-context free variables later. -/
@@ -416,7 +450,7 @@ private partial def fixpoint : Unit → M Unit
       fixpoint ()
 
 def run (letRecFVarIds : Array FVarId) (usedFVarsMap : UsedFVarsMap) : UsedFVarsMap :=
-  let (_, s) := ((fixpoint ()).run letRecFVarIds).run { usedFVarsMap := usedFVarsMap }
+  let (_, s) := fixpoint () |>.run letRecFVarIds |>.run { usedFVarsMap := usedFVarsMap }
   s.usedFVarsMap
 
 end FixPoint
@@ -426,13 +460,13 @@ abbrev FreeVarMap := FVarIdMap (Array FVarId)
 private def mkFreeVarMap [Monad m] [MonadMCtx m]
     (sectionVars : Array Expr) (mainFVarIds : Array FVarId)
     (recFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift) : m FreeVarMap := do
-  let usedFVarsMap  ← mkInitialUsedFVarsMap sectionVars mainFVarIds letRecsToLift
-  let letRecFVarIds := letRecsToLift.map fun toLift => toLift.fvarId
-  let usedFVarsMap  := FixPoint.run letRecFVarIds usedFVarsMap
+  let usedFVarsMap   ← mkInitialUsedFVarsMap sectionVars mainFVarIds letRecsToLift
+  let letRecFVarIds  := letRecsToLift.map fun toLift => toLift.fvarId
+  let usedFVarsMap   := FixPoint.run letRecFVarIds usedFVarsMap
   let mut freeVarMap := {}
   for toLift in letRecsToLift do
     let lctx       := toLift.lctx
-    let fvarIdsSet := (usedFVarsMap.find? toLift.fvarId).get!
+    let fvarIdsSet := usedFVarsMap.find? toLift.fvarId |>.get!
     let fvarIds    := fvarIdsSet.fold (init := #[]) fun fvarIds fvarId =>
       if lctx.contains fvarId && !recFVarIds.contains fvarId then
         fvarIds.push fvarId
@@ -465,7 +499,7 @@ private def pushLocalDecl (toProcess : Array FVarId) (fvarId : FVarId) (userName
     : StateRefT ClosureState TermElabM (Array FVarId) := do
   let type ← preprocess type
   modify fun s => { s with
-    newLocalDecls := s.newLocalDecls.push <| LocalDecl.cdecl default fvarId userName type bi,
+    newLocalDecls := s.newLocalDecls.push <| LocalDecl.cdecl default fvarId userName type bi
     exprArgs      := s.exprArgs.push (mkFVar fvarId)
   }
   return pushNewVars toProcess (collectFVars {} type)
@@ -473,16 +507,16 @@ private def pushLocalDecl (toProcess : Array FVarId) (fvarId : FVarId) (userName
 private partial def mkClosureForAux (toProcess : Array FVarId) : StateRefT ClosureState TermElabM Unit := do
   let lctx ← getLCtx
   match pickMaxFVar? lctx toProcess with
-  | none        => pure ()
+  | none        => return ()
   | some fvarId =>
     trace[Elab.definition.mkClosure] "toProcess: {toProcess.map mkFVar}, maxVar: {mkFVar fvarId}"
     let toProcess := toProcess.erase fvarId
-    let localDecl ← getLocalDecl fvarId
+    let localDecl ← fvarId.getDecl
     match localDecl with
-    | LocalDecl.cdecl _ _ userName type bi =>
+    | .cdecl _ _ userName type bi =>
       let toProcess ← pushLocalDecl toProcess fvarId userName type bi
       mkClosureForAux toProcess
-    | LocalDecl.ldecl _ _ userName type val _ =>
+    | .ldecl _ _ userName type val _ =>
       let zetaFVarIds ← getZetaFVarIds
       if !zetaFVarIds.contains fvarId then
         /- Non-dependent let-decl. See comment at src/Lean/Meta/Closure.lean -/
@@ -496,41 +530,60 @@ private partial def mkClosureForAux (toProcess : Array FVarId) : StateRefT Closu
           newLetDecls   := s.newLetDecls.push <| LocalDecl.ldecl default fvarId userName type val false,
           /- We don't want to interleave let and lambda declarations in our closure. So, we expand any occurrences of fvarId
              at `newLocalDecls` and `localDecls` -/
-          newLocalDecls := s.newLocalDecls.map (replaceFVarIdAtLocalDecl fvarId val),
-          localDecls := s.localDecls.map (replaceFVarIdAtLocalDecl fvarId val)
+          newLocalDecls := s.newLocalDecls.map (·.replaceFVarId fvarId val)
+          localDecls := s.localDecls.map (·.replaceFVarId fvarId val)
         }
         mkClosureForAux (pushNewVars toProcess (collectFVars (collectFVars {} type) val))
 
 private partial def mkClosureFor (freeVars : Array FVarId) (localDecls : Array LocalDecl) : TermElabM ClosureState := do
-  let (_, s) ← (mkClosureForAux freeVars).run { localDecls := localDecls }
-  pure { s with
-    newLocalDecls := s.newLocalDecls.reverse,
-    newLetDecls   := s.newLetDecls.reverse,
+  let (_, s) ← mkClosureForAux freeVars |>.run { localDecls := localDecls }
+  return { s with
+    newLocalDecls := s.newLocalDecls.reverse
+    newLetDecls   := s.newLetDecls.reverse
     exprArgs      := s.exprArgs.reverse
   }
 
 structure LetRecClosure where
   ref        : Syntax
   localDecls : Array LocalDecl
-  closed     : Expr -- expression used to replace occurrences of the let-rec FVarId
+  /-- Expression used to replace occurrences of the let-rec `FVarId`. -/
+  closed     : Expr
   toLift     : LetRecToLift
 
 private def mkLetRecClosureFor (toLift : LetRecToLift) (freeVars : Array FVarId) : TermElabM LetRecClosure := do
   let lctx := toLift.lctx
   withLCtx lctx toLift.localInstances do
   lambdaTelescope toLift.val fun xs val => do
+    /-
+      Recall that `toLift.type` and `toLift.value` may have different binder annotations.
+      See issue #1377 for an example.
+    -/
+    let userNameAndBinderInfos ← forallBoundedTelescope toLift.type xs.size fun xs _ =>
+      xs.mapM fun x => do
+        let localDecl ← x.fvarId!.getDecl
+        return (localDecl.userName, localDecl.binderInfo)
+    /- Auxiliary map for preserving binder user-facind names and `BinderInfo` for types. -/
+    let mut userNameBinderInfoMap : FVarIdMap (Name × BinderInfo) := {}
+    for x in xs, (userName, bi) in userNameAndBinderInfos do
+      userNameBinderInfoMap := userNameBinderInfoMap.insert x.fvarId! (userName, bi)
     let type ← instantiateForall toLift.type xs
     let lctx ← getLCtx
     let s ← mkClosureFor freeVars <| xs.map fun x => lctx.get! x.fvarId!
-    let type := Closure.mkForall s.localDecls <| Closure.mkForall s.newLetDecls type
+    /- Apply original type binder info and user-facing names to local declarations. -/
+    let typeLocalDecls := s.localDecls.map fun localDecl =>
+      if let some (userName, bi) := userNameBinderInfoMap.find? localDecl.fvarId then
+        localDecl.setBinderInfo bi |>.setUserName userName
+      else
+        localDecl
+    let type := Closure.mkForall typeLocalDecls <| Closure.mkForall s.newLetDecls type
     let val  := Closure.mkLambda s.localDecls <| Closure.mkLambda s.newLetDecls val
     let c    := mkAppN (Lean.mkConst toLift.declName) s.exprArgs
-    assignExprMVar toLift.mvarId c
+    toLift.mvarId.assign c
     return {
       ref        := toLift.ref
       localDecls := s.newLocalDecls
       closed     := c
-      toLift     := { toLift with val := val, type := type }
+      toLift     := { toLift with val, type }
     }
 
 private def mkLetRecClosures (sectionVars : Array Expr) (mainFVarIds : Array FVarId) (recFVarIds : Array FVarId) (letRecsToLift : Array LetRecToLift) : TermElabM (List LetRecClosure) := do
@@ -565,7 +618,7 @@ def insertReplacementForLetRecs (r : Replacement) (letRecClosures : List LetRecC
 
 def Replacement.apply (r : Replacement) (e : Expr) : Expr :=
   e.replace fun e => match e with
-    | Expr.fvar fvarId => match r.find? fvarId with
+    | .fvar fvarId => match r.find? fvarId with
       | some c => some c
       | _      => none
     | _ => none
@@ -574,7 +627,7 @@ def pushMain (preDefs : Array PreDefinition) (sectionVars : Array Expr) (mainHea
     : TermElabM (Array PreDefinition) :=
   mainHeaders.size.foldM (init := preDefs) fun i preDefs => do
     let header := mainHeaders[i]!
-    let val  ← mkLambdaFVars sectionVars mainVals[i]!
+    let value ← mkLambdaFVars sectionVars mainVals[i]!
     let type ← mkForallFVars sectionVars header.type
     return preDefs.push {
       ref         := getDeclarationSelectionRef header.ref
@@ -582,22 +635,19 @@ def pushMain (preDefs : Array PreDefinition) (sectionVars : Array Expr) (mainHea
       declName    := header.declName
       levelParams := [], -- we set it later
       modifiers   := header.modifiers
-      type        := type
-      value       := val
+      type, value
     }
 
 def pushLetRecs (preDefs : Array PreDefinition) (letRecClosures : List LetRecClosure) (kind : DefKind) (modifiers : Modifiers) : Array PreDefinition :=
   letRecClosures.foldl (init := preDefs) fun preDefs c =>
-    let type := Closure.mkForall c.localDecls c.toLift.type
-    let val  := Closure.mkLambda c.localDecls c.toLift.val
+    let type  := Closure.mkForall c.localDecls c.toLift.type
+    let value := Closure.mkLambda c.localDecls c.toLift.val
     preDefs.push {
       ref         := c.ref
-      kind        := kind
       declName    := c.toLift.declName
       levelParams := [] -- we set it later
       modifiers   := { modifiers with attrs := c.toLift.attrs }
-      type        := type
-      value       := val
+      kind, type, value
     }
 
 def getKindForLetRecs (mainHeaders : Array DefViewElabHeader) : DefKind :=
@@ -716,13 +766,11 @@ def processDefDeriving (className : Name) (declName : Name) : TermElabM Bool := 
 
 /-- Remove auxiliary match discriminant let-declarations. -/
 def eraseAuxDiscr (e : Expr) : CoreM Expr := do
-  Core.transform e fun e => match e with
-    | Expr.letE n _ v b .. =>
+  Core.transform e fun e => do
+    if let .letE n _ v b .. := e then
       if isAuxDiscrName n then
-        return TransformStep.visit (b.instantiate1 v)
-      else
-        return TransformStep.visit e
-    | e => return TransformStep.visit e
+        return .visit (b.instantiate1 v)
+    return .continue
 
 partial def checkForHiddenUnivLevels (allUserLevelNames : List Name) (preDefs : Array PreDefinition) : TermElabM Unit :=
   unless (← MonadLog.hasErrors) do
@@ -825,7 +873,7 @@ def elabMutualDef (ds : Array Syntax) (hints : TerminationHints) : CommandElabM 
     if ds.size > 1 && modifiers.isNonrec then
       throwErrorAt d "invalid use of 'nonrec' modifier in 'mutual' block"
     mkDefView modifiers d[1]
-  runTermElabM none fun vars => Term.elabMutualDef vars views hints
+  runTermElabM fun vars => Term.elabMutualDef vars views hints
 
 end Command
 end Lean.Elab

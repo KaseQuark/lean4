@@ -24,13 +24,13 @@ def unfoldMDatas : Expr → Expr
 
 @[builtinDelab fvar]
 def delabFVar : Delab := do
-let Expr.fvar id ← getExpr | unreachable!
+let Expr.fvar fvarId ← getExpr | unreachable!
 try
-  let l ← getLocalDecl id
+  let l ← fvarId.getDecl
   maybeAddBlockImplicit (mkIdent l.userName)
 catch _ =>
   -- loose free variable, use internal name
-  maybeAddBlockImplicit $ mkIdent id.name
+  maybeAddBlockImplicit <| mkIdent fvarId.name
 
 -- loose bound variable, use pseudo syntax
 @[builtinDelab bvar]
@@ -41,7 +41,7 @@ def delabBVar : Delab := do
 @[builtinDelab mvar]
 def delabMVar : Delab := do
   let Expr.mvar n ← getExpr | unreachable!
-  let mvarDecl ← getMVarDecl n
+  let mvarDecl ← n.getDecl
   let n :=
     match mvarDecl.userName with
     | Name.anonymous => n.name.replacePrefix `_uniq `m
@@ -146,7 +146,7 @@ partial def getParamKinds : DelabM (Array ParamKind) := do
     withTransparency TransparencyMode.all do
       forallTelescopeArgs e.getAppFn e.getAppArgs fun params _ => do
         params.mapM fun param => do
-          let l ← getLocalDecl param.fvarId!
+          let l ← param.fvarId!.getDecl
           pure { name := l.userName, bInfo := l.binderInfo, defVal := l.type.getOptParamDefault?, isAutoParam := l.type.isAutoParam }
   catch _ => pure #[] -- recall that expr may be nonsensical
 where
@@ -206,15 +206,6 @@ def unexpandRegularApp (stx : Syntax) : Delab := do
     | EStateM.Result.ok stx _ => pure stx
     | _ => failure
 
--- abbrev coe {α : Sort u} {β : Sort v} (a : α) [CoeT α a β] : β
--- abbrev coeFun {α : Sort u} {γ : α → Sort v} (a : α) [CoeFun α γ] : γ a
-def unexpandCoe (stx : Syntax) : Delab := whenPPOption getPPCoercions do
-  if not (isCoe (← getExpr)) then failure
-  match stx with
-  | `($_ $arg)   => return arg
-  | `($_ $args*) => `($(args.get! 0) $(args.eraseIdx 0)*)
-  | _            => failure
-
 def unexpandStructureInstance (stx : Syntax) : Delab := whenPPOption getPPStructureInstances do
   let env ← getEnv
   let e ← getExpr
@@ -233,7 +224,7 @@ def unexpandStructureInstance (stx : Syntax) : Delab := whenPPOption getPPStruct
     let fieldPos ← nextExtraPos
     let fieldId := annotatePos fieldPos fieldId
     addFieldInfo fieldPos (s.induct ++ fieldName) fieldName fieldId fieldVals[idx]!
-    let field ← `(structInstField|$fieldId:ident := $(stx[1][idx]):term)
+    let field ← `(structInstField|$fieldId:ident := $(stx[1][idx]))
     fields := fields.push field
   let tyStx ← withType do
     if (← getPPOption getPPStructureInstanceType) then delab >>= pure ∘ some else pure none
@@ -262,7 +253,7 @@ def delabAppImplicit : Delab := do
       let arg ← getExpr
       let opts ← getOptions
       let mkNamedArg (name : Name) (argStx : Syntax) : DelabM Syntax := do
-        `(Parser.Term.namedArgument| ($(mkIdent name):ident := $argStx:term))
+        `(Parser.Term.namedArgument| ($(mkIdent name) := $argStx))
       let argStx? : Option Syntax ←
         if ← getPPOption getPPAnalysisSkip then pure none
         else if ← getPPOption getPPAnalysisHole then `(_)
@@ -285,7 +276,6 @@ def delabAppImplicit : Delab := do
   if ← isRegularApp then
     (guard (← getPPOption getPPNotation) *> unexpandRegularApp stx)
     <|> (guard (← getPPOption getPPStructureInstances) *> unexpandStructureInstance stx)
-    <|> (guard (← getPPOption getPPNotation) *> unexpandCoe stx)
     <|> pure stx
   else pure stx
 
@@ -395,7 +385,7 @@ def delabAppMatch : Delab := whenPPOption getPPNotation <| whenPPOption getPPMat
         if let some hName := st.info.discrInfos[idx]!.hName? then
           -- TODO: we should check whether the corresponding binder name, matches `hName`.
           -- If it does not we should pretty print this `match` as a regular application.
-          return { st with discrs := st.discrs.push (← `(matchDiscr| $(mkIdent hName):ident : $discr:term)) }
+          return { st with discrs := st.discrs.push (← `(matchDiscr| $(mkIdent hName) : $discr)) }
         else
           return { st with discrs := st.discrs.push (← `(matchDiscr| $discr:term)) }
       else if st.rhss.size < st.info.altNumParams.size then

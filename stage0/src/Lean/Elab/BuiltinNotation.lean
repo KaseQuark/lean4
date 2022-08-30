@@ -26,12 +26,6 @@ open Meta
       mkCoe expectedType type e
   | _ => throwError "invalid coercion notation, expected type is not known"
 
-/--
-The *anonymous constructor* `⟨e, ...⟩` is equivalent to `c e ...` if the
-expected type is an inductive type with a single constructor `c`.
-If more terms are given than `c` has parameters, the remaining arguments
-are turned into a new anonymous constructor application. For example,
-`⟨a, b, c⟩ : α × (β × γ)` is equivalent to `⟨a, ⟨b, c⟩⟩`. -/
 @[builtinTermElab anonymousCtor] def elabAnonymousCtor : TermElab := fun stx expectedType? =>
   match stx with
   | `(⟨$args,*⟩) => do
@@ -75,23 +69,23 @@ are turned into a new anonymous constructor application. For example,
 
 @[builtinMacro Lean.Parser.Term.show] def expandShow : Macro := fun stx =>
   match stx with
-  | `(show $type from $val)            => let thisId := mkIdentFrom stx `this; `(let_fun $thisId : $type := $val; $thisId)
-  | `(show $type by%$b $tac:tacticSeq) => `(show $type from by%$b $tac:tacticSeq)
-  | _                                  => Macro.throwUnsupported
+  | `(show $type from $val)  => let thisId := mkIdentFrom stx `this; `(let_fun $thisId : $type := $val; $thisId)
+  | `(show $type by%$b $tac) => `(show $type from by%$b $tac)
+  | _                        => Macro.throwUnsupported
 
 @[builtinMacro Lean.Parser.Term.have] def expandHave : Macro := fun stx =>
   let thisId := mkIdentFrom stx `this
   match stx with
   | `(have $x $bs* $[: $type]? := $val; $body)            => `(let_fun $x $bs* $[: $type]? := $val; $body)
-  | `(have $[: $type]? := $val; $body)                    => `(have $thisId:ident $[: $type]? := $val; $body)
-  | `(have $x $bs* $[: $type]? $alts:matchAlts; $body)    => `(let_fun $x $bs* $[: $type]? $alts:matchAlts; $body)
-  | `(have $[: $type]? $alts:matchAlts; $body)            => `(have $thisId:ident $[: $type]? $alts:matchAlts; $body)
+  | `(have $[: $type]? := $val; $body)                    => `(have $thisId $[: $type]? := $val; $body)
+  | `(have $x $bs* $[: $type]? $alts; $body)              => `(let_fun $x $bs* $[: $type]? $alts; $body)
+  | `(have $[: $type]? $alts:matchAlts; $body)            => `(have $thisId $[: $type]? $alts:matchAlts; $body)
   | `(have $pattern:term $[: $type]? := $val:term; $body) => `(let_fun $pattern:term $[: $type]? := $val:term ; $body)
-  | _                                                          => Macro.throwUnsupported
+  | _                                                     => Macro.throwUnsupported
 
 @[builtinMacro Lean.Parser.Term.suffices] def expandSuffices : Macro
   | `(suffices $[$x :]? $type from $val; $body)            => `(have $[$x]? : $type := $body; $val)
-  | `(suffices $[$x :]? $type by%$b $tac:tacticSeq; $body) => `(have $[$x]? : $type := $body; by%$b $tac:tacticSeq)
+  | `(suffices $[$x :]? $type by%$b $tac:tacticSeq; $body) => `(have $[$x]? : $type := $body; by%$b $tac)
   | _                                                           => Macro.throwUnsupported
 
 open Lean.Parser in
@@ -123,13 +117,6 @@ private def elabTParserMacroAux (prec lhsPrec e : Term) : TermElabM Syntax := do
     elabTParserMacroAux (prec?.getD <| quote Parser.maxPrec) (lhsPrec?.getD <| quote 0) e
   | _ => throwUnsupportedSyntax
 
-/--
-`panic! msg` formally evaluates to `@Inhabited.default α` if the expected type
-`α` implements `Inhabited`.
-At runtime, `msg` and the file position are printed to stderr unless the C
-function `lean_set_panic_messages(false)` has been executed before. If the C
-function `lean_set_exit_on_panic(true)` has been executed before, the process is
-then aborted. -/
 @[builtinTermElab Lean.Parser.Term.panic] def elabPanic : TermElab := fun stx expectedType? => do
   match stx with
   | `(panic! $arg) =>
@@ -141,11 +128,9 @@ then aborted. -/
     withMacroExpansion stx stxNew $ elabTerm stxNew expectedType?
   | _ => throwUnsupportedSyntax
 
-/-- A shorthand for `panic! "unreachable code has been reached"`. -/
 @[builtinMacro Lean.Parser.Term.unreachable]  def expandUnreachable : Macro := fun _ =>
   `(panic! "unreachable code has been reached")
 
-/-- `assert! cond` panics if `cond` evaluates to `false`. -/
 @[builtinMacro Lean.Parser.Term.assert]  def expandAssert : Macro
   | `(assert! $cond; $body) =>
     -- TODO: support for disabling runtime assertions
@@ -154,15 +139,11 @@ then aborted. -/
     | none => `(if $cond then $body else panic! ("assertion violation"))
   | _ => Macro.throwUnsupported
 
-/--
-`dbg_trace e; body` evaluates to `body` and prints `e` (which can be an
-interpolated string literal) to stderr. It should only be used for debugging. -/
 @[builtinMacro Lean.Parser.Term.dbgTrace]  def expandDbgTrace : Macro
   | `(dbg_trace $arg:interpolatedStr; $body) => `(dbgTrace (s! $arg) fun _ => $body)
   | `(dbg_trace $arg:term; $body)            => `(dbgTrace (toString $arg) fun _ => $body)
   | _                                        => Macro.throwUnsupported
 
-/-- A temporary placeholder for a missing proof or value. -/
 @[builtinTermElab «sorry»] def elabSorry : TermElab := fun stx expectedType? => do
   let stxNew ← `(sorryAx _ false)
   withMacroExpansion stx stxNew <| elabTerm stxNew expectedType?
@@ -179,7 +160,7 @@ partial def mkPairs (elems : Array Term) : MacroM Term :=
       pure acc
   loop (elems.size - 1) elems.back
 
-private partial def hasCDot : Syntax → Bool
+partial def hasCDot : Syntax → Bool
   | Syntax.node _ k args =>
     if k == ``Lean.Parser.Term.paren then false
     else if k == ``Lean.Parser.Term.cdot then true
@@ -224,12 +205,12 @@ def elabCDotFunctionAlias? (stx : Term) : TermElabM (Option Expr) := do
   let some stx ← liftMacroM <| expandCDotArg? stx | pure none
   let stx ← liftMacroM <| expandMacros stx
   match stx with
-  | `(fun $binders* => $f:ident $args*) =>
+  | `(fun $binders* => $f $args*) =>
     if binders == args then
       try Term.resolveId? f catch _ => return none
     else
       return none
-  | `(fun $binders* => binop% $f:ident $a $b) =>
+  | `(fun $binders* => binop% $f $a $b) =>
     if binders == #[a, b] then
       try Term.resolveId? f catch _ => return none
     else
@@ -241,15 +222,6 @@ where
     | `(($e)) => Term.expandCDot? e
     | _ => Term.expandCDot? stx
 
-
-/-
-  Try to expand `·` notation.
-  Recall that in Lean the `·` notation must be surrounded by parentheses.
-  We may change this is the future, but right now, here are valid examples
-  - `(· + 1)`
-  - `(f ⟨·, 1⟩ ·)`
-  - `(· + ·)`
-  - `(f · a b)` -/
 @[builtinMacro Lean.Parser.Term.paren] def expandParen : Macro
   | `(())           => `(Unit.unit)
   | `(($e : $type)) => do
@@ -294,12 +266,6 @@ private def withLocalIdentFor (stx : Term) (e : Expr) (k : Term → TermElabM Ex
     let aux ← withLocalDeclD id (← inferType e) fun x => do mkLambdaFVars #[x] (← k (mkIdentFrom stx id))
     return mkApp aux e
 
-/--
-`h ▸ e` is a macro built on top of `Eq.rec` and `Eq.symm` definitions.
-Given `h : a = b` and `e : p a`, the term `h ▸ e` has type `p b`.
-You can also view `h ▸ e` as a "type casting" operation where you change the type of `e` by using `h`.
-See the Chapter "Quantifiers and Equality" in the manual "Theorem Proving in Lean" for additional information.
--/
 @[builtinTermElab subst] def elabSubst : TermElab := fun stx expectedType? => do
   let expectedType? ← tryPostponeIfHasMVars? expectedType?
   match stx with

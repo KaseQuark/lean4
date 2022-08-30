@@ -36,3 +36,36 @@ private theorem List.of_toArrayAux_eq_toArrayAux {as bs : List α} {cs ds : Arra
   apply propext; apply Iff.intro
   · intro h; simp [toArray] at h; have := of_toArrayAux_eq_toArrayAux h rfl; exact this.1
   · intro h; rw [h]
+
+def Array.mapM' [Monad m] (f : α → m β) (as : Array α) : m { bs : Array β // bs.size = as.size } :=
+  go 0 ⟨mkEmpty as.size, rfl⟩ (by simp_arith)
+where
+  go (i : Nat) (acc : { bs : Array β // bs.size = i }) (hle : i ≤ as.size) : m { bs : Array β // bs.size = as.size } := do
+    if h : i = as.size then
+      return h ▸ acc
+    else
+      have hlt : i < as.size := Nat.lt_of_le_of_ne hle h
+      let b ← f as[i]
+      go (i+1) ⟨acc.val.push b, by simp [acc.property]⟩ hlt
+termination_by go i _ _ => as.size - i
+
+@[inline] private unsafe def mapMonoMImp [Monad m] (as : Array α) (f : α → m α) : m (Array α) :=
+  go 0 as
+where
+  @[specialize] go (i : Nat) (as : Array α) : m (Array α) := do
+    if h : i < as.size then
+      let a := as[i]
+      let b ← f a
+      if ptrEq a b then
+        go (i+1) as
+      else
+        go (i+1) (as.set ⟨i, h⟩ b)
+    else
+      return as
+
+/--
+Monomorphic `Array.mapM`. The internal implementation uses pointer equality, and does not allocate a new array
+if the result of each `f a` is a pointer equal value `a`.
+-/
+@[implementedBy mapMonoMImp] def Array.mapMonoM [Monad m] (as : Array α) (f : α → m α) : m (Array α) :=
+  as.mapM f

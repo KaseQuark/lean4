@@ -103,7 +103,7 @@ def mkDecEq (declName : Name) : CommandElabM Bool := do
   if indVal.isNested then
     return false -- nested inductive types are not supported yet
   else
-    let cmds ← liftTermElabM none <| mkDecEqCmds indVal
+    let cmds ← liftTermElabM <| mkDecEqCmds indVal
     cmds.forM elabCommand
     return true
 
@@ -157,8 +157,8 @@ def mkEnumOfNatThm (declName : Name) : MetaM Unit := do
     }
 
 def mkDecEqEnum (declName : Name) : CommandElabM Unit := do
-  liftTermElabM none <| mkEnumOfNat declName
-  liftTermElabM none <| mkEnumOfNatThm declName
+  liftTermElabM <| mkEnumOfNat declName
+  liftTermElabM <| mkEnumOfNatThm declName
   let ofNatIdent  := mkIdent (Name.mkStr declName "ofNat")
   let auxThmIdent := mkIdent (Name.mkStr declName "ofNat_toCtorIdx")
   let cmd ← `(
@@ -183,7 +183,7 @@ def mkDecEqInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
     mkDecEq declNames[0]!
 
 builtin_initialize
-  registerBuiltinDerivingHandler `DecidableEq mkDecEqInstanceHandler
+  registerDerivingHandler `DecidableEq mkDecEqInstanceHandler
   registerTraceClass `Elab.Deriving.decEq
 
 end Lean.Elab.Deriving.DecEq

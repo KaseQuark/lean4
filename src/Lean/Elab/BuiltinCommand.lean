@@ -120,12 +120,10 @@ private partial def elabChoiceAux (cmds : Array Syntax) (i : Nat) : CommandElabM
   | Except.error ex => throwError (ex.toMessageData (← getOptions))
 
 @[builtinCommandElab «export»] def elabExport : CommandElab := fun stx => do
-  -- `stx` is of the form (Command.export "export" <namespace> "(" (null <ids>*) ")")
-  let id  := stx[1].getId
-  let nss ← resolveNamespace id
+  let `(export $ns ($ids*)) := stx | throwUnsupportedSyntax
+  let nss ← resolveNamespace ns
   let currNamespace ← getCurrNamespace
   if nss == [currNamespace] then throwError "invalid 'export', self export"
-  let ids := stx[3].getArgs
   let mut aliases := #[]
   for idStx in ids do
     let id := idStx.getId
@@ -133,86 +131,98 @@ private partial def elabChoiceAux (cmds : Array Syntax) (i : Nat) : CommandElabM
     aliases := aliases.push (currNamespace ++ id, declName)
   modify fun s => { s with env := aliases.foldl (init := s.env) fun env p => addAlias env p.1 p.2 }
 
-@[builtinCommandElab «open»] def elabOpen : CommandElab := fun n => do
-  let openDecls ← elabOpenDecl n[1]
-  modifyScope fun scope => { scope with openDecls := openDecls }
+@[builtinCommandElab «open»] def elabOpen : CommandElab
+  | `(open $decl:openDecl) => do
+    let openDecls ← elabOpenDecl decl
+    modifyScope fun scope => { scope with openDecls := openDecls }
+  | _ => throwUnsupportedSyntax
 
-private def typelessBinder? : Syntax → Option (Array Name × Bool)
-  | `(bracketedBinder|($ids*)) => some <| (ids.map Syntax.getId, true)
-  | `(bracketedBinder|{$ids*}) => some <| (ids.map Syntax.getId, false)
+private def typelessBinder? : Syntax → Option (Array (TSyntax [`ident, `Lean.Parser.Term.hole]) × Bool)
+  | `(bracketedBinder|($ids*)) => some <| (ids, true)
+  | `(bracketedBinder|{$ids*}) => some <| (ids, false)
   | _                          => none
 
--- This function is used to implement the `variable` command that updates binder annotations.
-private def matchBinderNames (ids : Array Syntax) (binderNames : Array Name) : CommandElabM Bool :=
-  let ids := ids.map Syntax.getId
-  /-
-    TODO: allow users to update the annotation of some of the ids.
-    The current application supports the common case
-    ```
-    variable (α : Type)
-    ...
-    variable {α : Type}
-    ```
-  -/
-  if ids == binderNames then
-    return true
-  else if binderNames.any ids.contains then
-    /- We currently do not split binder blocks. -/
-    throwError "failed to update variable binder annotation" -- TODO: improve error message
-  else
-    return false
+/--  If `id` is an identifier, return true if `ids` contains `id`. -/
+private def containsId (ids : Array (TSyntax [`ident, ``Parser.Term.hole])) (id : TSyntax [`ident, ``Parser.Term.hole]) : Bool :=
+  id.raw.isIdent && ids.any fun id' => id'.raw.getId == id.raw.getId
 
 /--
   Auxiliary method for processing binder annotation update commands: `variable (α)` and `variable {α}`.
   The argument `binder` is the binder of the `variable` command.
-  The method retuns `true` if the binder annotation was updated.
-  Remark: we currently do not suppor updates of the form
+  The method retuns an array containing the "residue", that is, variables that do not correspond to updates.
+  Recall that a `bracketedBinder` can be of the form `(x y)`.
   ```
-  variable (α β : Type)
-  ...
-  variable {α} -- trying to update part of the binder block defined above.
+  variable {α β : Type}
+  variable (α γ)
   ```
+  The second `variable` command updates the binder annotation for `α`, and returns "residue" `γ`.
 -/
-private def replaceBinderAnnotation (binder : TSyntax ``Parser.Term.bracketedBinder) : CommandElabM Bool := do
-  if let some (binderNames, explicit) := typelessBinder? binder then
-    let varDecls := (← getScope).varDecls
-    let mut varDeclsNew := #[]
-    let mut found := false
-    for varDecl in varDecls do
-      if let some (ids, ty?, annot?) :=
-        match varDecl with
-        | `(bracketedBinder|($ids* $[: $ty?]? $(annot?)?)) => some (ids, ty?, annot?)
-        | `(bracketedBinder|{$ids* $[: $ty?]?})            => some (ids, ty?, none)
-        | `(bracketedBinder|[$id : $ty])                   => some (#[id], some ty, none)
-        | _                                                => none
-      then
-        if (← matchBinderNames ids binderNames) then
-          if annot?.isSome then
-            throwError "cannot update binder annotation of variables with default values/tactics"
-          if explicit then
-            varDeclsNew := varDeclsNew.push (← `(bracketedBinder| ($ids* $[: $ty?]?)))
-          else
-            varDeclsNew := varDeclsNew.push (← `(bracketedBinder| {$ids* $[: $ty?]?}))
-          found := true
-        else
-          varDeclsNew := varDeclsNew.push varDecl
-      else
-        varDeclsNew := varDeclsNew.push varDecl
-    if found then
-      modifyScope fun scope => { scope with varDecls := varDeclsNew }
-      return true
+private def replaceBinderAnnotation (binder : TSyntax ``Parser.Term.bracketedBinder) : CommandElabM (Array (TSyntax ``Parser.Term.bracketedBinder)) := do
+  let some (binderIds, explicit) := typelessBinder? binder | return #[binder]
+  let varDecls := (← getScope).varDecls
+  let mut varDeclsNew := #[]
+  let mut binderIds := binderIds
+  let mut binderIdsIniSize := binderIds.size
+  let mut modifiedVarDecls := false
+  for varDecl in varDecls do
+    let (ids, ty?, explicit') ← match varDecl with
+      | `(bracketedBinder|($ids* $[: $ty?]? $(annot?)?)) =>
+        if annot?.isSome then
+          for binderId in binderIds do
+            if containsId ids binderId then
+              throwErrorAt binderId "cannot update binder annotation of variables with default values/tactics"
+        pure (ids, ty?, true)
+      | `(bracketedBinder|{$ids* $[: $ty?]?}) =>
+        pure (ids, ty?, false)
+      | `(bracketedBinder|[$id : $_]) =>
+        for binderId in binderIds do
+          if binderId.raw.isIdent && binderId.raw.getId == id.getId then
+            throwErrorAt binderId "cannot change the binder annotation of the previously declared local instance `{id.getId}`"
+        varDeclsNew := varDeclsNew.push varDecl; continue
+      | _ =>
+        varDeclsNew := varDeclsNew.push varDecl; continue
+    if explicit == explicit' then
+      -- no update, ensure we don't have redundant annotations.
+      for binderId in binderIds do
+        if containsId ids binderId then
+          throwErrorAt binderId "redundant binder annotation update"
+      varDeclsNew := varDeclsNew.push varDecl
+    else if binderIds.all fun binderId => !containsId ids binderId then
+      -- `binderIds` and `ids` are disjoint
+      varDeclsNew := varDeclsNew.push varDecl
     else
-      return false
+      let mkBinder (id : TSyntax [`ident, ``Parser.Term.hole]) (explicit : Bool) : CommandElabM (TSyntax ``Parser.Term.bracketedBinder) :=
+        if explicit then
+          `(bracketedBinder| ($id $[: $ty?]?))
+        else
+          `(bracketedBinder| {$id $[: $ty?]?})
+      for id in ids do
+        if let some idx := binderIds.findIdx? fun binderId => binderId.raw.isIdent && binderId.raw.getId == id.raw.getId then
+          binderIds := binderIds.eraseIdx idx
+          modifiedVarDecls := true
+          varDeclsNew := varDeclsNew.push (← mkBinder id explicit)
+        else
+          varDeclsNew := varDeclsNew.push (← mkBinder id explicit')
+  if modifiedVarDecls then
+    modifyScope fun scope => { scope with varDecls := varDeclsNew }
+  if binderIds.size != binderIdsIniSize then
+    binderIds.mapM fun binderId =>
+      if explicit then
+        `(bracketedBinder| ($binderId))
+      else
+        `(bracketedBinder| {$binderId})
   else
-    return false
+    return #[binder]
 
 @[builtinCommandElab «variable»] def elabVariable : CommandElab
   | `(variable $binders*) => do
     -- Try to elaborate `binders` for sanity checking
-    runTermElabM none fun _ => Term.withAutoBoundImplicit <|
+    runTermElabM fun _ => Term.withAutoBoundImplicit <|
       Term.elabBinders binders fun _ => pure ()
     for binder in binders do
-      unless (← replaceBinderAnnotation binder) do
+      let binders ← replaceBinderAnnotation binder
+      -- Remark: if we want to produce error messages when variables shadow existing ones, here is the place to do it.
+      for binder in binders do
         let varUIds ← getBracketedBinderIds binder |>.mapM (withFreshMacroScope ∘ MonadQuotation.addMacroScope)
         modifyScope fun scope => { scope with varDecls := scope.varDecls.push binder, varUIds := scope.varUIds ++ varUIds }
   | _ => throwUnsupportedSyntax
@@ -220,7 +230,7 @@ private def replaceBinderAnnotation (binder : TSyntax ``Parser.Term.bracketedBin
 open Meta
 
 def elabCheckCore (ignoreStuckTC : Bool) : CommandElab
-  | `(#check%$tk $term) => withoutModifyingEnv $ runTermElabM (some `_check) fun _ => do
+  | `(#check%$tk $term) => withoutModifyingEnv <| runTermElabM fun _ => Term.withDeclName `_check do
     let e ← Term.elabTerm term none
     Term.synthesizeSyntheticMVarsNoPostponing (ignoreStuckTC := ignoreStuckTC)
     let (e, _) ← Term.levelMVarToParam (← instantiateMVars e)
@@ -232,7 +242,7 @@ def elabCheckCore (ignoreStuckTC : Bool) : CommandElab
 @[builtinCommandElab Lean.Parser.Command.check] def elabCheck : CommandElab := elabCheckCore (ignoreStuckTC := true)
 
 @[builtinCommandElab Lean.Parser.Command.reduce] def elabReduce : CommandElab
-  | `(#reduce%$tk $term) => withoutModifyingEnv <| runTermElabM (some `_check) fun _ => do
+  | `(#reduce%$tk $term) => withoutModifyingEnv <| runTermElabM fun _ => Term.withDeclName `_reduce do
     let e ← Term.elabTerm term none
     Term.synthesizeSyntheticMVarsNoPostponing
     let (e, _) ← Term.levelMVarToParam (← instantiateMVars e)
@@ -334,7 +344,7 @@ unsafe def elabEvalUnsafe : CommandElab
     -- Evaluate using term using `MetaEval` class.
     let elabMetaEval : CommandElabM Unit := do
       -- act? is `some act` if elaborated `term` has type `CommandElabM α`
-      let act? ← runTermElabM (some declName) fun _ => do
+      let act? ← runTermElabM fun _ => Term.withDeclName declName do
         let e ← elabEvalTerm
         let eType ← instantiateMVars (← inferType e)
         if eType.isAppOfArity ``CommandElabM 1 then
@@ -356,7 +366,7 @@ unsafe def elabEvalUnsafe : CommandElab
       let some act := act? | return ()
       act
     -- Evaluate using term using `Eval` class.
-    let elabEval : CommandElabM Unit := runTermElabM (some declName) fun _ => do
+    let elabEval : CommandElabM Unit := runTermElabM fun _ => Term.withDeclName declName do
       -- fall back to non-meta eval if MetaEval hasn't been defined yet
       -- modify e to `runEval e`
       let e ← mkRunEval (← elabEvalTerm)
@@ -378,7 +388,7 @@ opaque elabEval : CommandElab
 
 @[builtinCommandElab «synth»] def elabSynth : CommandElab := fun stx => do
   let term := stx[1]
-  withoutModifyingEnv <| runTermElabM `_synth_cmd fun _ => do
+  withoutModifyingEnv <| runTermElabM fun _ => Term.withDeclName `_synth_cmd do
     let inst ← Term.elabTerm term none
     Term.synthesizeSyntheticMVarsNoPostponing
     let inst ← instantiateMVars inst
@@ -394,5 +404,12 @@ opaque elabEval : CommandElab
 @[builtinMacro Lean.Parser.Command.«in»] def expandInCmd : Macro
   | `($cmd₁ in $cmd₂) => `(section $cmd₁:command $cmd₂ end)
   | _                 => Macro.throwUnsupported
+
+@[builtinCommandElab Parser.Command.addDocString] def elabAddDeclDoc : CommandElab := fun stx => do
+  match stx with
+  | `($doc:docComment add_decl_doc $id) =>
+    let declName ← resolveGlobalConstNoOverloadWithInfo id
+    addDocString declName (← getDocStringText doc)
+  | _ => throwUnsupportedSyntax
 
 end Lean.Elab.Command

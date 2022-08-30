@@ -90,31 +90,52 @@ def append (b : ArrayStxBuilder) (arr : Syntax) (appendName := ``Array.append) :
 
 end ArrayStxBuilder
 
--- Elaborate the content of a syntax quotation term
+def tryAddSyntaxNodeKindInfo (stx : Syntax) (k : SyntaxNodeKind) : TermElabM Unit := do
+  if (← getEnv).contains k then
+    addTermInfo' stx (← mkConstWithFreshMVarLevels k)
+  else
+    -- HACK to support built in categories, which use a different naming convention
+    let k := ``Lean.Parser.Category ++ k
+    if (← getEnv).contains k then
+      addTermInfo' stx (← mkConstWithFreshMVarLevels k)
+
+instance : Quote Syntax.Preresolved where
+  quote
+    | .namespace ns => Unhygienic.run ``(Syntax.Preresolved.namespace $(quote ns))
+    | .decl n fs    => Unhygienic.run ``(Syntax.Preresolved.decl $(quote n) $(quote fs))
+
+/-- Elaborate the content of a syntax quotation term -/
 private partial def quoteSyntax : Syntax → TermElabM Term
   | Syntax.ident _ rawVal val preresolved => do
     if !hygiene.get (← getOptions) then
       return ← `(Syntax.ident info $(quote rawVal) $(quote val) $(quote preresolved))
     -- Add global scopes at compilation time (now), add macro scope at runtime (in the quotation).
     -- See the paper for details.
-    let r ← resolveGlobalName val
+    let consts ← resolveGlobalName val
     -- extension of the paper algorithm: also store unique section variable names as top-level scopes
     -- so they can be captured and used inside the section, but not outside
-    let r' := resolveSectionVariable (← read).sectionVars val
-    let preresolved := r ++ r' ++ preresolved
+    let sectionVars := resolveSectionVariable (← read).sectionVars val
+    -- extension of the paper algorithm: resolve namespaces as well
+    let namespaces ← resolveNamespaceCore (allowEmpty := true) val
+    let preresolved := (consts ++ sectionVars).map (fun (n, projs) => Preresolved.decl n projs) ++
+      namespaces.map .namespace ++
+      preresolved
     let val := quote val
     -- `scp` is bound in stxQuot.expand
     `(Syntax.ident info $(quote rawVal) (addMacroScope mainModule $val scp) $(quote preresolved))
   -- if antiquotation, insert contents as-is, else recurse
   | stx@(Syntax.node _ k _) => do
+    if let some (k, _) := stx.antiquotKind? then
+      if let some name := getAntiquotKindSpec? stx then
+        tryAddSyntaxNodeKindInfo name k
     if isAntiquots stx && !isEscapedAntiquot (getCanonicalAntiquot stx) then
       let ks := antiquotKinds stx
       `(@TSyntax.raw $(quote <| ks.map (·.1)) $(getAntiquotTerm (getCanonicalAntiquot stx)))
     else if isTokenAntiquot stx && !isEscapedAntiquot stx then
       match stx[0] with
-      | Syntax.atom _ val => `(Syntax.atom (Option.getD (getHeadInfo? $(getAntiquotTerm stx)) info) $(quote val))
+      | Syntax.atom _ val => `(Syntax.atom (SourceInfo.fromRef $(getAntiquotTerm stx)) $(quote val))
       | _                 => throwErrorAt stx "expected token"
-    else if isAntiquotSuffixSplice stx && !isEscapedAntiquot stx then
+    else if isAntiquotSuffixSplice stx && !isEscapedAntiquot (getCanonicalAntiquot (getAntiquotSuffixSpliceInner stx)) then
       -- splices must occur in a `many` node
       throwErrorAt stx "unexpected antiquotation splice"
     else if isAntiquotSplice stx && !isEscapedAntiquot stx then
@@ -125,7 +146,7 @@ private partial def quoteSyntax : Syntax → TermElabM Term
       let mut args := ArrayStxBuilder.empty
       let appendName := if (← getEnv).contains ``Array.append then ``Array.append else ``Array.appendCore
       for arg in stx.getArgs do
-        if k == nullKind && isAntiquotSuffixSplice arg then
+        if k == nullKind && isAntiquotSuffixSplice arg && !isEscapedAntiquot (getCanonicalAntiquot (getAntiquotSuffixSpliceInner arg)) then
           let antiquot := getAntiquotSuffixSpliceInner arg
           let ks := antiquotKinds antiquot |>.map (·.1)
           let val := getAntiquotTerm (getCanonicalAntiquot antiquot)
@@ -139,7 +160,7 @@ private partial def quoteSyntax : Syntax → TermElabM Term
               let sep := quote <| getSepFromSplice arg
               `(@TSepArray.elemsAndSeps $(quote ks) $sep $val)
             | k         => throwErrorAt arg "invalid antiquotation suffix splice kind '{k}'"
-        else if k == nullKind && isAntiquotSplice arg then
+        else if k == nullKind && isAntiquotSplice arg && !isEscapedAntiquot arg then
           let k := antiquotSpliceKind? arg
           let (arg, bindLets) ← floatOutAntiquotTerms arg |>.run pure
           let inner ← (getAntiquotSpliceContents arg).mapM quoteSyntax
@@ -162,26 +183,37 @@ private partial def quoteSyntax : Syntax → TermElabM Term
         else do
           let arg ← quoteSyntax arg
           args := args.push arg
-      `(Syntax.node SourceInfo.none $(quote k) $(args.build))
+      `(Syntax.node info $(quote k) $(args.build))
   | Syntax.atom _ val =>
     `(Syntax.atom info $(quote val))
   | Syntax.missing => throwUnsupportedSyntax
 
+def addNamedQuotInfo (stx : Syntax) (k : SyntaxNodeKind) : TermElabM SyntaxNodeKind := do
+  if stx.getNumArgs == 3 && stx[0].isAtom then
+    let s := stx[0].getAtomVal!
+    if s.length > 3 then
+      if let (some l, some r) := (stx[0].getPos? true, stx[0].getTailPos? true) then
+        -- HACK: The atom is the string "`(foo|", so chop off the edges.
+        -- HACK: We have to use .original here or the hover won't show up
+        let name := stx[0].setInfo <| .original default ⟨l.1 + 2⟩ default ⟨r.1 - 1⟩
+        tryAddSyntaxNodeKindInfo name k
+  pure k
+
 def getQuotKind (stx : Syntax) : TermElabM SyntaxNodeKind := do
   match stx.getKind with
-  | ``Parser.Command.quot => pure `command
-  | ``Parser.Term.quot => pure `term
-  | ``Parser.Level.quot => pure `level
-  | ``Parser.Tactic.quot => pure `tactic
-  | ``Parser.Tactic.quotSeq => pure `tactic.seq
-  | ``Parser.Term.stx.quot => pure `stx
-  | ``Parser.Term.prec.quot => pure `prec
-  | ``Parser.Term.attr.quot => pure `attr
-  | ``Parser.Term.prio.quot => pure `prio
-  | ``Parser.Term.doElem.quot => pure `doElem
-  | .str kind "quot" => return kind
+  | ``Parser.Command.quot => addNamedQuotInfo stx `command
+  | ``Parser.Term.quot => addNamedQuotInfo stx `term
+  | ``Parser.Level.quot => addNamedQuotInfo stx `level
+  | ``Parser.Tactic.quot => addNamedQuotInfo stx `tactic
+  | ``Parser.Tactic.quotSeq => addNamedQuotInfo stx `tactic.seq
+  | ``Parser.Term.stx.quot => addNamedQuotInfo stx `stx
+  | ``Parser.Term.prec.quot => addNamedQuotInfo stx `prec
+  | ``Parser.Term.attr.quot => addNamedQuotInfo stx `attr
+  | ``Parser.Term.prio.quot => addNamedQuotInfo stx `prio
+  | ``Parser.Term.doElem.quot => addNamedQuotInfo stx `doElem
+  | .str kind "quot" => addNamedQuotInfo stx kind
   | ``dynamicQuot =>
-    match (← resolveGlobalConst stx[1]) with
+    match (← resolveGlobalConstWithInfos stx[1]) with
     | [parser] => pure parser
     | _ => throwError "unknown parser {stx[1]}"
   | k => throwError "unexpected quotation kind {k}"
@@ -296,14 +328,17 @@ private def adaptRhs (fn : Term → TermElabM Term) : Alt → TermElabM Alt
 
 private partial def getHeadInfo (alt : Alt) : TermElabM HeadInfo :=
   let pat := alt.fst.head!
-  let unconditionally (rhsFn) := pure {
+  let unconditionally rhsFn := pure {
     check := unconditional,
     doMatch := fun yes _ => yes [],
-    onMatch := fun taken => covered (adaptRhs rhsFn ∘ noOpMatchAdaptPats taken) (match taken with | unconditional => true | _ => false)
+    onMatch := fun taken => covered (adaptRhs rhsFn ∘ noOpMatchAdaptPats taken) (taken matches unconditional)
   }
   -- quotation pattern
-  if isQuot pat then
+  if isQuot pat then do
     let quoted := getQuotContent pat
+    if let some (k, _) := quoted.antiquotKind? then
+      if let some name := getAntiquotKindSpec? quoted then
+        tryAddSyntaxNodeKindInfo name k
     if quoted.isAtom then
       -- We assume that atoms are uniquely determined by the node kind and never have to be checked
       unconditionally pure
@@ -385,9 +420,11 @@ private partial def getHeadInfo (alt : Alt) : TermElabM HeadInfo :=
           let contents := if contents.size == 1
             then contents[0]!
             else mkNullNode contents
+          -- We use `no_error_if_unused%` in auxiliary `match`-syntax to avoid spurious error messages,
+          -- the outer `match` is checking for unused alternatives
           `(match ($(discrs).sequenceMap fun
-                | `($contents) => some $tuple
-                | _            => none) with
+                | `($contents) => no_error_if_unused% some $tuple
+                | _            => no_error_if_unused% none) with
               | some $resId => $yes
               | none => $no)
     }
@@ -533,7 +570,7 @@ private partial def compileStxMatch (discrs : List Term) (alts : List Alt) : Ter
           -- group undecided alternatives in a new default case `| discr2, ... => match discr, discr2, ... with ...`
           let vars ← discrs.mapM fun _ => withFreshMacroScope `(discr)
           let pats := List.replicate newDiscrs.length (Unhygienic.run `(_)) ++ vars
-          let alts ← undecidedAlts.mapM fun alt => `(matchAltExpr| | $(alt.1.toArray),* => $(alt.2))
+          let alts ← undecidedAlts.mapM fun alt => `(matchAltExpr| | $(alt.1.toArray),* => no_error_if_unused% $(alt.2))
           let rhs  ← `(match discr, $[$(vars.toArray):term],* with $alts:matchAlt*)
           yesAlts := yesAlts.push (pats, rhs)
         withFreshMacroScope $ compileStxMatch (newDiscrs ++ discrs) yesAlts.toList)
@@ -543,38 +580,91 @@ private partial def compileStxMatch (discrs : List Term) (alts : List Alt) : Ter
     `(let discr := $discr; $stx)
   | _, _ => unreachable!
 
+abbrev IdxSet := Std.HashSet Nat
+
+/--
+Given `rhss` the right-hand-sides of a `match`-syntax notation,
+We tag them with with fresh identifiers `alt_idx`. We use them to detect whether an alternative
+has been used or not.
+The result is a triple `(altIdxMap, ignoreIfUnused, rhssNew)` where
+- `altIdxMap` is a mapping from the `alt_idx` identifiers to right-hand-side indices.
+  That is, the map contains the entry `alt_idx ↦ i` if `alt_idx` was used to mark `rhss[i]`.
+- `i ∈ ignoreIfUnused` if `rhss[i]` is marked with `no_error_if_unused%`
+- `rhssNew` is the updated array of right-hand-sides.
+-/
+private def markRhss (rhss : Array Term) : TermElabM (NameMap Nat × IdxSet × Array Term) := do
+  let mut altIdxMap : NameMap Nat := {}
+  let mut ignoreIfUnused : IdxSet := {}
+  let mut rhssNew := #[]
+  for rhs in rhss do
+    match rhs with
+    | `(no_error_if_unused% $_ ) => ignoreIfUnused := ignoreIfUnused.insert rhssNew.size
+    | _ => pure ()
+    let (idx, rhs) ← withFreshMacroScope do
+      let idx ← `(alt_idx)
+      let rhs ← `(alt_idx $rhs)
+      return (idx, rhs)
+    altIdxMap := altIdxMap.insert idx.getId rhssNew.size
+    rhssNew := rhssNew.push rhs
+  return (altIdxMap, ignoreIfUnused, rhssNew)
+
+/--
+Given the mapping `idxMap` built using `markRhss`, and `stx` the resulting syntax after expanding `match`-syntax,
+return the pair `(stxNew, usedSet)`, where `stxNew` is `stx` after removing the `alt_idx` markers in `idxMap`,
+and `i ∈ usedSet` if `stx` contains an `alt_idx` s.t. `alt_idx ↦ i` is in `idxMap`.
+That is, `usedSet` contains the index of the used match-syntax right-hand-sides.
+-/
+private partial def findUsedAlts (stx : Syntax) (altIdxMap : NameMap Nat) : TermElabM (Syntax × IdxSet) := do
+  go stx |>.run {}
+where
+  go (stx : Syntax) : StateRefT IdxSet TermElabM Syntax := do
+    match stx with
+    | `($id:ident $rhs:term) =>
+      if let some idx := altIdxMap.find? id.getId then
+        modify fun s => s.insert idx
+        return rhs
+    | _ => pure ()
+    match stx with
+    | .node info kind cs => return .node info kind (← cs.mapM go)
+    | _ => return stx
+
+/--
+Check whether `stx` has unused alternatives, and remove the auxiliary `alt_idx` markers from it (see `markRhss`).
+The parameter `alts` provides position information for alternatives.
+`altIdxMap` and `ignoreIfUnused` are the map and set built using `markRhss`.
+-/
+private def checkUnusedAlts (stx : Syntax) (alts : Array Syntax) (altIdxMap : NameMap Nat) (ignoreIfUnused : IdxSet) : TermElabM Syntax := do
+  let (stx, used) ← findUsedAlts stx altIdxMap
+  for i in [:alts.size] do
+    unless used.contains i || ignoreIfUnused.contains i do
+      logErrorAt alts[i]! s!"redundant alternative #{i+1}"
+  return stx
+
 def match_syntax.expand (stx : Syntax) : TermElabM Syntax := do
   match stx with
-  | `(match $[$discrs:term],* with $[| $[$patss],* => $rhss]*) => do
+  | `(match $[$discrs:term],* with $[|%$alt $[$patss],* => $rhss]*) => do
     if !patss.any (·.any (fun
       | `($_@$pat) => pat.raw.isQuot
       | pat        => pat.raw.isQuot)) then
       -- no quotations => fall back to regular `match`
       throwUnsupportedSyntax
+    let (altIdxMap, ignoreIfUnused, rhss) ← markRhss rhss
+    -- call `getQuotKind` on all the patterns, which adds
+    -- term info for all `(foo| ...)` as a side effect
+    patss.forM (·.forM fun ⟨pat⟩ => do if pat.isQuot then _ ← getQuotKind pat)
     let stx ← compileStxMatch discrs.toList (patss.map (·.toList) |>.zip rhss).toList
+    let stx ← checkUnusedAlts stx alt altIdxMap ignoreIfUnused
     trace[Elab.match_syntax.result] "{stx}"
     return stx
   | _ => throwUnsupportedSyntax
 
-/--
-  Syntactic pattern match. Matches a `Syntax` value against quotations, pattern variables, or `_`.
-
-  Quoted identifiers only match identical identifiers - custom matching such as by the preresolved names only should be done explicitly.
-
-  `Syntax.atom`s are ignored during matching by default except when part of a built-in literal.
-  For users introducing new atoms, we recommend wrapping them in dedicated syntax kinds if they should participate in matching.
-  For example, in
-  ```lean
-  syntax "c" ("foo" <|> "bar") ...
-  ```
-  `foo` and `bar` are indistinguishable during matching, but in
-  ```lean
-  syntax foo := "foo"
-  syntax "c" (foo <|> "bar") ...
-  ```
-  they are not. -/
 @[builtinTermElab «match»] def elabMatchSyntax : TermElab :=
   adaptExpander match_syntax.expand
+
+@[builtinTermElab noErrorIfUnused] def elabNoErrorIfUnused : TermElab := fun stx expectedType? =>
+  match stx with
+  | `(no_error_if_unused% $term) => elabTerm term expectedType?
+  | _ => throwUnsupportedSyntax
 
 builtin_initialize
   registerTraceClass `Elab.match_syntax

@@ -9,11 +9,11 @@ import Lean.Parser.Extra
 namespace Lean.Parser
 
 builtin_initialize
-  registerBuiltinParserAttribute `builtinPrioParser `prio LeadingIdentBehavior.both
+  registerBuiltinParserAttribute `builtinPrioParser ``Category.prio .both
   registerBuiltinDynamicParserAttribute `prioParser `prio
 
 builtin_initialize
-  registerBuiltinParserAttribute `builtinAttrParser `attr LeadingIdentBehavior.symbol
+  registerBuiltinParserAttribute `builtinAttrParser ``Category.attr .symbol
   registerBuiltinDynamicParserAttribute `attrParser `attr
 
 @[inline] def priorityParser (rbp : Nat := 0) : Parser :=
@@ -33,11 +33,11 @@ end Priority
 namespace Attr
 
 @[builtinAttrParser] def simple     := leading_parser ident >> optional (priorityParser <|> ident)
-/- Remark, We can't use `simple` for `class`, `instance`, `export`, and `macro` because they are  keywords. -/
+/- Remark, We can't use `simple` for `class`, `instance`, `export`, and `macro` because they are keywords. -/
 @[builtinAttrParser] def «macro»    := leading_parser "macro " >> ident
 @[builtinAttrParser] def «export»   := leading_parser "export " >> ident
 
-/- We don't use `simple` for recursor because the argument is not a priority-/
+/- We don't use `simple` for recursor because the argument is not a priority -/
 @[builtinAttrParser] def recursor        := leading_parser nonReservedSymbol "recursor " >> numLit
 @[builtinAttrParser] def «class»         := leading_parser "class"
 @[builtinAttrParser] def «instance»      := leading_parser "instance" >> optional priorityParser

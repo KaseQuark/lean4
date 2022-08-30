@@ -6,6 +6,7 @@ Authors: Wojciech Nawrocki
 -/
 import Lean.Meta.PPGoal
 import Lean.Widget.InteractiveCode
+import Lean.Data.Lsp.Extra
 
 /-! RPC procedures for retrieving tactic and term goals with embedded `CodeWithInfos`. -/
 
@@ -21,7 +22,7 @@ structure InteractiveHypothesisBundle where
   val? : Option CodeWithInfos := none
   isInstance : Bool
   isType : Bool
-  deriving Inhabited, RpcEncoding
+  deriving Inhabited, RpcEncodable
 
 structure InteractiveGoal where
   hyps      : Array InteractiveHypothesisBundle
@@ -32,7 +33,7 @@ structure InteractiveGoal where
   name of the MVar that it is a goal for.)
   This is none when we are showing a term goal. -/
   mvarId? : Option MVarId := none
-  deriving Inhabited, RpcEncoding
+  deriving Inhabited, RpcEncodable
 
 namespace InteractiveGoal
 
@@ -69,7 +70,7 @@ structure InteractiveTermGoal where
   hyps      : Array InteractiveHypothesisBundle
   type      : CodeWithInfos
   range     : Lsp.Range
-  deriving Inhabited, RpcEncoding
+  deriving Inhabited, RpcEncodable
 
 namespace InteractiveTermGoal
 
@@ -80,7 +81,7 @@ end InteractiveTermGoal
 
 structure InteractiveGoals where
   goals : Array InteractiveGoal
-  deriving RpcEncoding
+  deriving RpcEncodable
 
 open Meta in
 def addInteractiveHypothesisBundle (hyps : Array InteractiveHypothesisBundle) (ids : Array (Name × FVarId)) (type : Expr) (value? : Option Expr := none) : MetaM (Array InteractiveHypothesisBundle) := do
@@ -103,6 +104,7 @@ def goalToInteractive (mvarId : MVarId) : MetaM InteractiveGoal := do
   let some mvarDecl := (← getMCtx).findDecl? mvarId
     | throwError "unknown goal {mvarId.name}"
   let ppAuxDecls := pp.auxDecls.get (← getOptions)
+  let showLetValues := pp.showLetValues.get (← getOptions)
   let lctx := mvarDecl.lctx
   let lctx : LocalContext := lctx.sanitizeNames.run' { options := (← getOptions) }
   withLCtx lctx mvarDecl.localInstances do
@@ -145,8 +147,8 @@ def goalToInteractive (mvarId : MVarId) : MetaM InteractiveGoal := do
             let varName := varName.simpMacroScopes
             hyps ← pushPending varNames prevType? hyps
             let type ← instantiateMVars type
-            let val ← instantiateMVars val
-            hyps ← addInteractiveHypothesisBundle hyps #[(varName, fvarId)] type val
+            let val? ← if showLetValues then pure (some (← instantiateMVars val)) else pure none
+            hyps ← addInteractiveHypothesisBundle hyps #[(varName, fvarId)] type val?
             varNames := #[]
             prevType? := none
     hyps ← pushPending varNames prevType? hyps

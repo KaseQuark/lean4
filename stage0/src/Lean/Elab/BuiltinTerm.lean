@@ -4,11 +4,11 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
 import Lean.Elab.Term
+import Lean.Elab.Eval
 
 namespace Lean.Elab.Term
 open Meta
 
-/-- The universe of propositions. `Prop ≡ Sort 0`. -/
 @[builtinTermElab «prop»] def elabProp : TermElab := fun _ _ =>
   return mkSort levelZero
 
@@ -18,15 +18,13 @@ private def elabOptLevel (stx : Syntax) : TermElabM Level :=
   else
     elabLevel stx[0]
 
-/-- A specific universe in Lean's infinite hierarchy of universes. -/
 @[builtinTermElab «sort»] def elabSort : TermElab := fun stx _ =>
   return mkSort (← elabOptLevel stx[1])
 
-/-- A type universe. `Type ≡ Type 0`, `Type u ≡ Sort (u + 1)`. -/
 @[builtinTermElab «type»] def elabTypeStx : TermElab := fun stx _ =>
   return mkSort (mkLevelSucc (← elabOptLevel stx[1]))
 
-/-
+/-!
  the method `resolveName` adds a completion point for it using the given
     expected type. Thus, we propagate the expected type if `stx[0]` is an identifier.
     It doesn't "hurt" if the identifier can be resolved because the expected type is not used in this case.
@@ -55,7 +53,6 @@ private def elabOptLevel (stx : Syntax) : TermElabM Level :=
   else
     elabPipeCompletion stx expectedType?
 
-/-- A placeholder term, to be synthesized by unification. -/
 @[builtinTermElab «hole»] def elabHole : TermElab := fun stx expectedType? => do
   let mvar ← mkFreshExprMVar expectedType?
   registerMVarErrorHoleInfo mvar.mvarId! stx
@@ -89,12 +86,12 @@ private def elabOptLevel (stx : Syntax) : TermElabM Level :=
           withLCtx mvarDecl.lctx mvarDecl.localInstances do
             throwError "synthetic hole has already been defined and assigned to value incompatible with the current context{indentExpr val}"
       | none =>
-        if (← isMVarDelayedAssigned mvarId) then
+        if (← mvarId.isDelayedAssigned) then
           -- We can try to improve this case if needed.
           throwError "synthetic hole has already beend defined and delayed assigned with an incompatible local context"
         else if lctx.isSubPrefixOf mvarDecl.lctx then
           let mvarNew ← mkNewHole ()
-          assignExprMVar mvarId mvarNew
+          mvarId.assign mvarNew
           return mvarNew
         else
           throwError "synthetic hole has already been defined with an incompatible local context"
@@ -107,7 +104,7 @@ private def elabOptLevel (stx : Syntax) : TermElabM Level :=
      | none =>
        let e ← elabTerm e none
        let mvar ← mkFreshExprMVar (← inferType e) MetavarKind.syntheticOpaque n.getId
-       assignExprMVar mvar.mvarId! e
+       mvar.mvarId!.assign e
        -- We use `mkSaveInfoAnnotation` to make sure the info trees for `e` are saved even if `b` is a metavariable.
        return mkSaveInfoAnnotation (← elabTerm b expectedType?)
   | _ => throwUnsupportedSyntax
@@ -148,11 +145,12 @@ private def mkTacticMVar (type : Expr) (tacticCode : Syntax) : TermElabM Expr :=
   registerSyntheticMVar ref mvarId <| SyntheticMVarKind.tactic tacticCode (← saveContext)
   return mvar
 
-/-- `by tac` constructs a term of the expected type by running the tactic(s) `tac`. -/
-@[builtinTermElab byTactic] def elabByTactic : TermElab := fun stx expectedType? =>
+@[builtinTermElab byTactic] def elabByTactic : TermElab := fun stx expectedType? => do
   match expectedType? with
   | some expectedType => mkTacticMVar expectedType stx
-  | none => throwError ("invalid 'by' tactic, expected type has not been provided")
+  | none =>
+    tryPostpone
+    throwError ("invalid 'by' tactic, expected type has not been provided")
 
 @[builtinTermElab noImplicitLambda] def elabNoImplicitLambda : TermElab := fun stx expectedType? =>
   elabTerm stx[1] (mkNoImplicitLambdaAnnotation <$> expectedType?)
@@ -205,17 +203,24 @@ def elabScientificLit : TermElab := fun stx expectedType? => do
   | some val => return mkApp (Lean.mkConst ``Char.ofNat) (mkRawNatLit val.toNat)
   | none     => throwIllFormedSyntax
 
-/- A literal of type `Name`. -/
 @[builtinTermElab quotedName] def elabQuotedName : TermElab := fun stx _ =>
   match stx[0].isNameLit? with
   | some val => pure $ toExpr val
   | none     => throwIllFormedSyntax
 
-/--
-A resolved name literal. Evaluates to the full name of the given constant if
-existent in the current context, or else fails. -/
 @[builtinTermElab doubleQuotedName] def elabDoubleQuotedName : TermElab := fun stx _ =>
   return toExpr (← resolveGlobalConstNoOverloadWithInfo stx[2])
+
+@[builtinTermElab declName] def elabDeclName : TermElab := adaptExpander fun _ => do
+  let some declName ← getDeclName?
+    | throwError "invalid `decl_name%` macro, the declaration name is not available"
+  return (quote declName : Term)
+
+@[builtinTermElab Parser.Term.withDeclName] def elabWithDeclName : TermElab := fun stx expectedType? => do
+  let id := stx[2].getId
+  let id := if stx[1].isNone then id else (← getCurrNamespace) ++ id
+  let e := stx[3]
+  withMacroExpansion stx e <| withDeclName id <| elabTerm e expectedType?
 
 @[builtinTermElab typeOf] def elabTypeOf : TermElab := fun stx _ => do
   inferType (← elabTerm stx[1] none)
@@ -262,20 +267,42 @@ private def mkSilentAnnotationIfHole (e : Expr) : TermElabM Expr := do
   | none     => throwIllFormedSyntax
   | some msg => elabTermEnsuringType stx[2] expectedType? (errorMsgHeader? := msg)
 
-/-- `open ... in e` makes the given namespaces available in the term `e`. -/
 @[builtinTermElab «open»] def elabOpen : TermElab := fun stx expectedType? => do
+  let `(open $decl in $e) := stx | throwUnsupportedSyntax
   try
     pushScope
-    let openDecls ← elabOpenDecl stx[1]
+    let openDecls ← elabOpenDecl decl
     withTheReader Core.Context (fun ctx => { ctx with openDecls := openDecls }) do
-      elabTerm stx[3] expectedType?
+      elabTerm e expectedType?
   finally
     popScope
 
-/-- `set_option opt val in e` sets the option `opt` to the value `val` in the term `e`. -/
 @[builtinTermElab «set_option»] def elabSetOption : TermElab := fun stx expectedType? => do
   let options ← Elab.elabSetOption stx[1] stx[2]
   withTheReader Core.Context (fun ctx => { ctx with maxRecDepth := maxRecDepth.get options, options := options }) do
     elabTerm stx[4] expectedType?
+
+@[builtinTermElab withAnnotateTerm] def elabWithAnnotateTerm : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(with_annotate_term $stx $e) =>
+    withInfoContext' stx (elabTerm e expectedType?) (mkTermInfo .anonymous (expectedType? := expectedType?) stx)
+  | _ => throwUnsupportedSyntax
+
+private unsafe def evalFilePathUnsafe (stx : Syntax) : TermElabM System.FilePath :=
+  evalTerm System.FilePath (Lean.mkConst ``System.FilePath) stx
+
+@[implementedBy evalFilePathUnsafe]
+private opaque evalFilePath (stx : Syntax) : TermElabM System.FilePath
+
+@[builtinTermElab includeStr] def elabIncludeStr : TermElab
+  | `(include_str $path:term), _ => do
+    let path ← evalFilePath path
+    let ctx ← readThe Lean.Core.Context
+    let srcPath := System.FilePath.mk ctx.fileName
+    let some srcDir := srcPath.parent
+      | throwError "cannot compute parent directory of '{srcPath}'"
+    let path := srcDir / path
+    mkStrLit <$> IO.FS.readFile path
+  | _, _ => throwUnsupportedSyntax
 
 end Lean.Elab.Term

@@ -128,12 +128,19 @@ private def mkCoreContext (ctx : Context) (s : State) (heartbeats : Nat) : Core.
     initHeartbeats := heartbeats
     currMacroScope := ctx.currMacroScope }
 
-private def addTraceAsMessagesCore (ctx : Context) (log : MessageLog) (traceState : TraceState) : MessageLog :=
-  traceState.traces.foldl (init := log) fun (log : MessageLog) traceElem =>
+private def addTraceAsMessagesCore (ctx : Context) (log : MessageLog) (traceState : TraceState) : MessageLog := Id.run do
+  if traceState.traces.isEmpty then return log
+  let mut traces : Std.HashMap (String.Pos × String.Pos) (Array MessageData) := ∅
+  for traceElem in traceState.traces do
     let ref := replaceRef traceElem.ref ctx.ref
     let pos := ref.getPos?.getD 0
     let endPos := ref.getTailPos?.getD pos
-    log.add (mkMessageCore ctx.fileName ctx.fileMap traceElem.msg MessageSeverity.information pos endPos)
+    traces := traces.insert (pos, endPos) <| traces.findD (pos, endPos) #[] |>.push traceElem.msg
+  let mut log := log
+  let traces' := traces.toArray.qsort fun ((a, _), _) ((b, _), _) => a < b
+  for ((pos, endPos), traceMsg) in traces' do
+    log := log.add <| mkMessageCore ctx.fileName ctx.fileMap (.joinSep traceMsg.toList "\n") .information pos endPos
+  return log
 
 private def addTraceAsMessages : CommandElabM Unit := do
   let ctx ← read
@@ -148,13 +155,14 @@ def liftCoreM (x : CoreM α) : CommandElabM α := do
   let heartbeats ← IO.getNumHeartbeats
   let Eα := Except Exception α
   let x : CoreM Eα := try let a ← x; pure <| Except.ok a catch ex => pure <| Except.error ex
-  let x : EIO Exception (Eα × Core.State) := (ReaderT.run x (mkCoreContext ctx s heartbeats)).run { env := s.env, ngen := s.ngen, traceState := s.traceState, messages := {} }
+  let x : EIO Exception (Eα × Core.State) := (ReaderT.run x (mkCoreContext ctx s heartbeats)).run { env := s.env, ngen := s.ngen, traceState := s.traceState, messages := {}, infoState.enabled := s.infoState.enabled }
   let (ea, coreS) ← liftM x
   modify fun s => { s with
     env := coreS.env
     ngen := coreS.ngen
-    messages   := addTraceAsMessagesCore ctx (s.messages ++ coreS.messages) coreS.traceState
+    messages := addTraceAsMessagesCore ctx (s.messages ++ coreS.messages) coreS.traceState
     traceState := coreS.traceState
+    infoState.trees := s.infoState.trees.append coreS.infoState.trees
   }
   match ea with
   | Except.ok a    => pure a
@@ -239,7 +247,7 @@ private def elabCommandUsing (s : State) (stx : Syntax) : List (KeyedDeclsAttrib
       (withInfoTreeContext (mkInfoTree := mkInfoTree elabFn.declName stx) <| elabFn.value stx)
       (fun _ => do set s; elabCommandUsing s stx elabFns)
 
-/- Elaborate `x` with `stx` on the macro stack -/
+/-- Elaborate `x` with `stx` on the macro stack -/
 def withMacroExpansion {α} (beforeStx afterStx : Syntax) (x : CommandElabM α) : CommandElabM α :=
   withInfoContext (mkInfo := pure <| .ofMacroExpansionInfo { stx := beforeStx, output := afterStx, lctx := .empty }) do
     withReader (fun ctx => { ctx with macroStack := { before := beforeStx, after := afterStx } :: ctx.macroStack }) x
@@ -334,30 +342,49 @@ private def mkMetaContext : Meta.Context := {
   config := { foApprox := true, ctxApprox := true, quasiPatternApprox := true }
 }
 
+/-- Return identifier names in the given bracketed binder. -/
 def getBracketedBinderIds : Syntax → Array Name
   | `(bracketedBinder|($ids* $[: $ty?]? $(_annot?)?)) => ids.map Syntax.getId
-  | `(bracketedBinder|{$ids* $[: $ty?]?})            => ids.map Syntax.getId
-  | `(bracketedBinder|[$id : $_])                    => #[id.getId]
-  | `(bracketedBinder|[$_])                          => #[Name.anonymous]
-  | _                                                => #[]
+  | `(bracketedBinder|{$ids* $[: $ty?]?})             => ids.map Syntax.getId
+  | `(bracketedBinder|[$id : $_])                     => #[id.getId]
+  | `(bracketedBinder|[$_])                           => #[Name.anonymous]
+  | _                                                 => #[]
 
-private def mkTermContext (ctx : Context) (s : State) (declName? : Option Name) : Term.Context := Id.run do
+private def mkTermContext (ctx : Context) (s : State) : Term.Context := Id.run do
   let scope      := s.scopes.head!
   let mut sectionVars := {}
   for id in scope.varDecls.concatMap getBracketedBinderIds, uid in scope.varUIds do
     sectionVars := sectionVars.insert id uid
   { macroStack             := ctx.macroStack
-    declName?              := declName?
     sectionVars            := sectionVars
     isNoncomputableSection := scope.isNoncomputable
     tacticCache?           := ctx.tacticCache? }
 
-private def mkTermState (scope : Scope) (s : State) : Term.State := {
-  levelNames        := scope.levelNames
-  infoState.enabled := s.infoState.enabled
-}
+/--
+Lift the `TermElabM` monadic action `x` into a `CommandElabM` monadic action.
 
-def liftTermElabM {α} (declName? : Option Name) (x : TermElabM α) : CommandElabM α := do
+Note that `x` is executed with an empty message log. Thus, `x` cannot modify/view messages produced by
+previous commands.
+
+If you need to access the free variables corresponding to the ones declared using the `variable` command,
+consider using `runTermElabM`.
+
+Recall that `TermElabM` actions can automatically lift `MetaM` and `CoreM` actions.
+Example:
+```
+import Lean
+
+open Lean Elab Command Meta
+
+def printExpr (e : Expr) : MetaM Unit := do
+  IO.println s!"{← ppExpr e} : {← ppExpr (← inferType e)}"
+
+#eval
+  liftTermElabM do
+    printExpr (mkConst ``Nat)
+```
+-/
+def liftTermElabM (x : TermElabM α) : CommandElabM α := do
   let ctx ← read
   let s   ← get
   let heartbeats ← IO.getNumHeartbeats
@@ -366,24 +393,46 @@ def liftTermElabM {α} (declName? : Option Name) (x : TermElabM α) : CommandEla
   -- We execute `x` with an empty message log. Thus, `x` cannot modify/view messages produced by previous commands.
   -- This is useful for implementing `runTermElabM` where we use `Term.resetMessageLog`
   let x : TermElabM _  := withSaveInfoContext x
-  let x : MetaM _      := (observing x).run (mkTermContext ctx s declName?) (mkTermState scope s)
+  let x : MetaM _      := (observing x).run (mkTermContext ctx s) { levelNames := scope.levelNames }
   let x : CoreM _      := x.run mkMetaContext {}
-  let x : EIO _ _      := x.run (mkCoreContext ctx s heartbeats) { env := s.env, ngen := s.ngen, nextMacroScope := s.nextMacroScope }
-  let (((ea, termS), _), coreS) ← liftEIO x
+  let x : EIO _ _      := x.run (mkCoreContext ctx s heartbeats) { env := s.env, ngen := s.ngen, nextMacroScope := s.nextMacroScope, infoState.enabled := s.infoState.enabled }
+  let (((ea, _), _), coreS) ← liftEIO x
   modify fun s => { s with
     env             := coreS.env
     nextMacroScope  := coreS.nextMacroScope
     ngen            := coreS.ngen
-    infoState.trees := s.infoState.trees.append termS.infoState.trees
+    infoState.trees := s.infoState.trees.append coreS.infoState.trees
     messages        := addTraceAsMessagesCore ctx (s.messages ++ coreS.messages) coreS.traceState
   }
   match ea with
   | Except.ok a     => pure a
   | Except.error ex => throw ex
 
-@[inline] def runTermElabM {α} (declName? : Option Name) (elabFn : Array Expr → TermElabM α) : CommandElabM α := do
+/--
+Execute the monadic action `elabFn xs` as a `CommandElabM` monadic action, where `xs` are free variables
+corresponding to all active scoped variables declared using the `variable` command.
+
+This method is similar to `liftTermElabM`, but it elaborates all scoped variables declared using the `variable`
+command.
+
+Example:
+```
+import Lean
+
+open Lean Elab Command Meta
+
+variable {α : Type u} {f : α → α}
+variable (n : Nat)
+
+#eval
+  runTermElabM fun xs => do
+    for x in xs do
+      IO.println s!"{← ppExpr x} : {← ppExpr (← inferType x)}"
+```
+-/
+def runTermElabM (elabFn : Array Expr → TermElabM α) : CommandElabM α := do
   let scope ← getScope
-  liftTermElabM declName? <|
+  liftTermElabM <|
     Term.withAutoBoundImplicit <|
       Term.elabBinders scope.varDecls fun xs => do
         -- We need to synthesize postponed terms because this is a checkpoint for the auto-bound implicit feature

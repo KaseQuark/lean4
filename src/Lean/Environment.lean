@@ -3,7 +3,7 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-import Std.Data.HashMap
+import Bootstrap.Data.HashMap
 import Lean.ImportingFlag
 import Lean.Data.SMap
 import Lean.Declaration
@@ -59,21 +59,64 @@ structure ModuleData where
 
 /-- Environment fields that are not used often. -/
 structure EnvironmentHeader where
+  /--
+  The trust level used by the kernel. For example,
+  the kernel assumes imported constants are type correct when the trust level is greater than zero.
+  -/
   trustLevel   : UInt32       := 0
+  /--
+  `quotInit = true` if the command `init_quot` has already been executed for the environment, and
+  `Quot` declarations have been added to the environment.
+  -/
   quotInit     : Bool         := false
+  /--
+  Name of the module being compiled.
+  -/
   mainModule   : Name         := default
-  imports      : Array Import := #[] -- direct imports
-  regions      : Array CompactedRegion := #[] -- compacted regions of all imported modules
-  moduleNames  : Array Name   := #[] -- names of all imported modules
-  moduleData   : Array ModuleData := #[] -- ModuleData of all imported modules
+  /-- Direct imports -/
+  imports      : Array Import := #[]
+  /-- Compacted regions for all imported modules. Objects in compacted memory regions do no require any memory management. -/
+  regions      : Array CompactedRegion := #[]
+  /-- Name of all imported modules (directly and indirectly). -/
+  moduleNames  : Array Name   := #[]
+  /-- Module data for all imported modules. -/
+  moduleData   : Array ModuleData := #[]
   deriving Inhabited
 
 open Std (HashMap)
 
+/--
+An environment stores declarations provided by the user. The kernel
+currently supports different kinds of declarations such as definitions, theorems,
+and inductive families. Each has a unique identifier (i.e., `Name`), and can be
+parameterized by a sequence of universe parameters.
+A constant in Lean is just a reference to a `ConstantInfo` object. The main task of
+the kernel is to type check these declarations and refuse type incorrect ones. The
+kernel does not allow declarations containing metavariables and/or free variables
+to be added to an environment. Environments are never destructively updated.
+
+The environment also contains a collction of extensions. For example, the `simp` theorems
+declared by users are stored in an environment extension. Users can declare new extensions
+using meta-programming.
+-/
 structure Environment where
+  /--
+  Mapping from constant name to module (index) where constant has been declared.
+  Recall that a Leah file has a header where previously compiled modules can be imported.
+  Each imported module has a unique `ModuleIdx`.
+  Many extensions use the `ModuleIdx` to efficiently retrieve information stored in imported modules.
+  -/
   const2ModIdx : HashMap Name ModuleIdx
+  /--
+  Mapping from constant name to `ConstantInfo`. It contains all constants (definitions, theorems, axioms, etc)
+  that have been already type checked by the kernel.
+  -/
   constants    : ConstMap
+  /--
+  Environment extensions. It also includes user-defined extensions.
+  -/
   extensions   : Array EnvExtensionState
+  /-- The header contains additional information that is not updated often. -/
   header       : EnvironmentHeader := {}
   deriving Inhabited
 
@@ -129,6 +172,7 @@ def getModuleIdx? (env : Environment) (moduleName : Name) : Option ModuleIdx :=
 
 end Environment
 
+/-- Exceptions that can be raised by the Kernel when type checking new declarations. -/
 inductive KernelException where
   | unknownConstant  (env : Environment) (name : Name)
   | alreadyDeclared  (env : Environment) (name : Name)
@@ -424,9 +468,12 @@ namespace SimplePersistentEnvExtension
 instance {α σ : Type} [Inhabited σ] : Inhabited (SimplePersistentEnvExtension α σ) :=
   inferInstanceAs (Inhabited (PersistentEnvExtension α α (List α × σ)))
 
+/-- Get the list of values used to update the state of the given
+`SimplePersistentEnvExtension` in the current file. -/
 def getEntries {α σ : Type} [Inhabited σ] (ext : SimplePersistentEnvExtension α σ) (env : Environment) : List α :=
   (PersistentEnvExtension.getState ext env).1
 
+/-- Get the current state of the given `SimplePersistentEnvExtension`. -/
 def getState {α σ : Type} [Inhabited σ] (ext : SimplePersistentEnvExtension α σ) (env : Environment) : σ :=
   (PersistentEnvExtension.getState ext env).2
 
@@ -675,6 +722,9 @@ unsafe def withImportModules {α : Type} (imports : List Import) (opts : Options
   let env ← importModules imports opts trustLevel
   try x env finally env.freeRegions
 
+/--
+Environment extension for tracking all `namespace` declared by users.
+-/
 builtin_initialize namespacesExt : SimplePersistentEnvExtension Name NameSSet ←
   registerSimplePersistentEnvExtension {
     name            := `namespaces,
@@ -684,12 +734,15 @@ builtin_initialize namespacesExt : SimplePersistentEnvExtension Name NameSSet �
 
 namespace Environment
 
+/-- Register a new namespace in the environment. -/
 def registerNamespace (env : Environment) (n : Name) : Environment :=
   if (namespacesExt.getState env).contains n then env else namespacesExt.addEntry env n
 
+/-- Return `true` if `n` is the name of a namespace in `env`. -/
 def isNamespace (env : Environment) (n : Name) : Bool :=
   (namespacesExt.getState env).contains n
 
+/-- Return a set containing all namespaces in `env`. -/
 def getNamespaceSet (env : Environment) : NameSSet :=
   namespacesExt.getState env
 

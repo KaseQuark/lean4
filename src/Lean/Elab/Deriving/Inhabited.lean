@@ -16,7 +16,7 @@ private def implicitBinderF := Parser.Term.implicitBinder
 private def instBinderF     := Parser.Term.instBinder
 
 private def mkInhabitedInstanceUsing (inductiveTypeName : Name) (ctorName : Name) (addHypotheses : Bool) : CommandElabM Bool := do
-  match (← liftTermElabM none mkInstanceCmd?) with
+  match (← liftTermElabM mkInstanceCmd?) with
   | some cmd =>
     elabCommand cmd
     return true
@@ -123,7 +123,7 @@ def mkInhabitedInstanceHandler (declNames : Array Name) : CommandElabM Bool := d
     return false
 
 builtin_initialize
-  registerBuiltinDerivingHandler `Inhabited mkInhabitedInstanceHandler
+  registerDerivingHandler `Inhabited mkInhabitedInstanceHandler
   registerTraceClass `Elab.Deriving.inhabited
 
 end Lean.Elab

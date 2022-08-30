@@ -24,7 +24,7 @@ structure SubexprInfo where
   subexprPos : Lean.SubExpr.Pos
   -- TODO(WN): add fields for semantic highlighting
   -- kind : Lsp.SymbolKind
-  deriving Inhabited, RpcEncoding
+  deriving Inhabited, RpcEncodable
 
 /-- Pretty-printed syntax (usually but not necessarily an `Expr`) with embedded `Info`s. -/
 abbrev CodeWithInfos := TaggedText SubexprInfo
@@ -44,14 +44,14 @@ where
       | some i => TaggedText.tag ⟨WithRpcRef.mk { ctx, info := i }, n⟩ (go subTt)
 
 def ppExprTagged (e : Expr) (explicit : Bool := false) : MetaM CodeWithInfos := do
-  let optsPerPos := if explicit then
-    Std.RBMap.ofList [
-      (SubExpr.Pos.root, KVMap.empty.setBool `pp.all true),
-      (SubExpr.Pos.root, KVMap.empty.setBool `pp.tagAppFns true)
-    ]
-  else
-    {}
-  let (fmt, infos) ← PrettyPrinter.ppExprWithInfos e optsPerPos
+  let delab := open PrettyPrinter.Delaborator in
+    if explicit then
+      withOptionAtCurrPos pp.tagAppFns.name true do
+      withOptionAtCurrPos pp.explicit.name true do
+        delabAppImplicit <|> delabAppExplicit
+    else
+      delab
+  let (fmt, infos) ← PrettyPrinter.ppExprWithInfos e (delab := delab)
   let tt := TaggedText.prettyTagged fmt
   let ctx := {
     env           := (← getEnv)

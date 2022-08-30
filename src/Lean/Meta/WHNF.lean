@@ -10,6 +10,7 @@ import Lean.Structure
 import Lean.Util.Recognizers
 import Lean.Meta.Basic
 import Lean.Meta.GetConst
+import Lean.Meta.FunInfo
 import Lean.Meta.Match.MatcherInfo
 import Lean.Meta.Match.MatchPatternAttr
 
@@ -84,14 +85,6 @@ private def mkNullaryCtor (type : Expr) (nparams : Nat) : MetaM (Option Expr) :=
     return mkAppN (mkConst ctor lvls) (type.getAppArgs.shrink nparams)
   | _ =>
     return none
-
-def toCtorIfLit : Expr → Expr
-  | Expr.lit (Literal.natVal v) =>
-    if v == 0 then mkConst `Nat.zero
-    else mkApp (mkConst `Nat.succ) (mkRawNatLit (v-1))
-  | Expr.lit (Literal.strVal v) =>
-    mkApp (mkConst `String.mk) (toExpr v.toList)
-  | e => e
 
 private def getRecRuleFor (recVal : RecursorVal) (major : Expr) : Option RecursorRule :=
   match major.getAppFn with
@@ -174,7 +167,7 @@ private def reduceRec (recVal : RecursorVal) (recLvls : List Level) (recArgs : A
     let mut major ← whnf major
     if recVal.k then
       major ← toCtorWhenK recVal major
-    major := toCtorIfLit major
+    major := major.toCtorIfLit
     major ← toCtorWhenStructure recVal.getInduct major
     match getRecRuleFor recVal major with
     | some rule =>
@@ -257,20 +250,46 @@ mutual
     match e with
     | .mdata _ e  => getStuckMVar? e
     | .proj _ _ e => getStuckMVar? (← whnf e)
-    | .mvar .. => do
+    | .mvar .. =>
       let e ← instantiateMVars e
       match e with
-      | Expr.mvar mvarId => pure (some mvarId)
+      | .mvar mvarId => return some mvarId
       | _ => getStuckMVar? e
     | .app f .. =>
       let f := f.getAppFn
       match f with
-      | .mvar mvarId   => return some mvarId
+      | .mvar .. =>
+        let e ← instantiateMVars e
+        match e.getAppFn with
+        | .mvar mvarId => return some mvarId
+        | _ => getStuckMVar? e
       | .const fName _ =>
         match (← getConstNoEx? fName) with
         | some <| .recInfo recVal  => isRecStuck? recVal e.getAppArgs
         | some <| .quotInfo recVal => isQuotRecStuck? recVal e.getAppArgs
-        | _                        => return none
+        | _  =>
+          unless e.hasExprMVar do return none
+          -- Projection function support
+          let some projInfo ← getProjectionFnInfo? fName | return none
+          -- This branch is relevant if `e` is a type class projection that is stuck because the instance has not been synthesized yet.
+          unless projInfo.fromClass do return none
+          let args := e.getAppArgs
+          -- First check whether `e`s instance is stuck.
+          if let some major := args.get? projInfo.numParams then
+            if let some mvarId ← getStuckMVar? major then
+              return mvarId
+          /-
+          Then, recurse on the explicit arguments
+          We want to detect the stuck instance in terms such as
+          `HAdd.hAdd Nat Nat Nat (instHAdd Nat instAddNat) n (OfNat.ofNat Nat 2 ?m)`
+          See issue https://github.com/leanprover/lean4/issues/1408 for an example where this is needed.
+          -/
+          let info ← getFunInfo f
+          for pinfo in info.paramInfo, arg in args do
+            if pinfo.isExplicit then
+              if let some mvarId ← getStuckMVar? arg then
+                return some mvarId
+          return none
       | .proj _ _ e => getStuckMVar? (← whnf e)
       | _ => return none
     | _ => return none
@@ -283,21 +302,21 @@ end
 /-- Auxiliary combinator for handling easy WHNF cases. It takes a function for handling the "hard" cases as an argument -/
 @[specialize] partial def whnfEasyCases (e : Expr) (k : Expr → MetaM Expr) : MetaM Expr := do
   match e with
-  | Expr.forallE ..    => return e
-  | Expr.lam ..        => return e
-  | Expr.sort ..       => return e
-  | Expr.lit ..        => return e
-  | Expr.bvar ..       => unreachable!
-  | Expr.letE ..       => k e
-  | Expr.const ..      => k e
-  | Expr.app ..        => k e
-  | Expr.proj ..       => k e
-  | Expr.mdata _ e     => whnfEasyCases e k
-  | Expr.fvar fvarId   =>
-    let decl ← getLocalDecl fvarId
+  | .forallE ..    => return e
+  | .lam ..        => return e
+  | .sort ..       => return e
+  | .lit ..        => return e
+  | .bvar ..       => unreachable!
+  | .letE ..       => k e
+  | .const ..      => k e
+  | .app ..        => k e
+  | .proj ..       => k e
+  | .mdata _ e     => whnfEasyCases e k
+  | .fvar fvarId   =>
+    let decl ← fvarId.getDecl
     match decl with
-    | LocalDecl.cdecl .. => return e
-    | LocalDecl.ldecl (value := v) (nonDep := nonDep) .. =>
+    | .cdecl .. => return e
+    | .ldecl (value := v) (nonDep := nonDep) .. =>
       let cfg ← getConfig
       if nonDep && !cfg.zetaNonDep then
         return e
@@ -305,7 +324,7 @@ end
         if cfg.trackZeta then
           modify fun s => { s with zetaFVarIds := s.zetaFVarIds.insert fvarId }
         whnfEasyCases v k
-  | Expr.mvar mvarId   =>
+  | .mvar mvarId   =>
     match (← getExprMVarAssignment? mvarId) with
     | some v => whnfEasyCases v k
     | none   => return e
@@ -426,7 +445,7 @@ def reduceMatcher? (e : Expr) : MetaM ReduceMatcherResult := do
   | _ => pure ReduceMatcherResult.notMatcher
 
 private def projectCore? (e : Expr) (i : Nat) : MetaM (Option Expr) := do
-  let e := toCtorIfLit e
+  let e := e.toCtorIfLit
   matchConstCtor e.getAppFn (fun _ => pure none) fun ctorVal _ =>
     let numArgs := e.getAppNumArgs
     let idx := ctorVal.numParams + i

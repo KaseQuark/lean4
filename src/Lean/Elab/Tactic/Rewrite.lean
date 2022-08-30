@@ -15,16 +15,16 @@ open Meta
 def rewriteTarget (stx : Syntax) (symm : Bool) (config : Rewrite.Config) : TacticM Unit := do
   Term.withSynthesize <| withMainContext do
     let e ← elabTerm stx none true
-    let r ← rewrite (← getMainGoal) (← getMainTarget) e symm (config := config)
-    let mvarId' ← replaceTargetEq (← getMainGoal) r.eNew r.eqProof
+    let r ← (← getMainGoal).rewrite (← getMainTarget) e symm (config := config)
+    let mvarId' ← (← getMainGoal).replaceTargetEq r.eNew r.eqProof
     replaceMainGoal (mvarId' :: r.mvarIds)
 
 def rewriteLocalDecl (stx : Syntax) (symm : Bool) (fvarId : FVarId) (config : Rewrite.Config) : TacticM Unit := do
   Term.withSynthesize <| withMainContext do
     let e ← elabTerm stx none true
-    let localDecl ← getLocalDecl fvarId
-    let rwResult ← rewrite (← getMainGoal) localDecl.type e symm (config := config)
-    let replaceResult ← replaceLocalDecl (← getMainGoal) fvarId rwResult.eNew rwResult.eqProof
+    let localDecl ← fvarId.getDecl
+    let rwResult ← (← getMainGoal).rewrite localDecl.type e symm (config := config)
+    let replaceResult ← (← getMainGoal).replaceLocalDecl fvarId rwResult.eNew rwResult.eqProof
     replaceMainGoal (replaceResult.mvarId :: rwResult.mvarIds)
 
 def withRWRulesSeq (token : Syntax) (rwRulesSeqStx : Syntax) (x : (symm : Bool) → (term : Syntax) → TacticM Unit) : TacticM Unit := do
@@ -50,6 +50,7 @@ def withRWRulesSeq (token : Syntax) (rwRulesSeqStx : Syntax) (x : (symm : Bool) 
             | [] => throwError "failed to rewrite using equation theorems for '{declName}'"
             | eqThm::eqThms => (x symm (mkIdentFrom id eqThm)) <|> go eqThms
           go eqThms.toList
+          discard <| Term.addTermInfo id (← mkConstWithFreshMVarLevels declName) (lctx? := ← getLCtx)
         match term with
         | `($id:ident)  => processId id
         | `(@$id:ident) => processId id

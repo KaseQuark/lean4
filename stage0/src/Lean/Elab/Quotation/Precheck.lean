@@ -92,7 +92,7 @@ private def isSectionVariable (e : Expr) : TermElabM Bool := do
        notation "x++" => x.foo
        ```
     -/
-    if let _::_ ← resolveGlobalName val then
+    if let _::_ ← resolveGlobalNameWithInfos stx val then
       return
     if (← read).quotLCtx.contains val then
       return
@@ -112,9 +112,8 @@ private def isSectionVariable (e : Expr) : TermElabM Bool := do
     for arg in args.raw do
       match arg with
       | `(argument| ($_ := $e)) => precheck e
-      | `(argument| $e:term)    => precheck e
       | `(argument| ..)         => pure ()
-      | _ => throwUnsupportedSyntax
+      | `(argument| $e:term)    => precheck e
   | _ => throwUnsupportedSyntax
 
 @[builtinQuotPrecheck Lean.Parser.Term.paren] def precheckParen : Precheck

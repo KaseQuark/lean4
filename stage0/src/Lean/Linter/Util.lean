@@ -5,20 +5,18 @@ import Lean.Server.InfoUtils
 namespace Lean.Linter
 
 register_builtin_option linter.all : Bool := {
-  defValue := true,
+  defValue := false
   descr := "enable all linters"
 }
 
-def getLinterAll (o : Options) : Bool := o.get linter.all.name linter.all.defValue
+def getLinterAll (o : Options) (defValue := linter.all.defValue) : Bool := o.get linter.all.name defValue
+
+def getLinterValue (opt : Lean.Option Bool) (o : Options) : Bool := o.get opt.name (getLinterAll o opt.defValue)
 
 open Lean.Elab Lean.Elab.Command
 
-def publishMessage
-  (content : String) (range : String.Range) (severity : MessageSeverity := .warning) : CommandElabM Unit :=
-do
-  let ctx := (← read)
-  let messages := (← get).messages |>.add (mkMessageCore ctx.fileName ctx.fileMap content severity range.start range.stop)
-  modify ({ · with messages := messages })
+def logLint (linterOption : Lean.Option Bool) (stx : Syntax) (msg : MessageData) : CommandElabM Unit :=
+  logWarningAt stx (.tagged linterOption.name m!"{msg} [{linterOption.name}]")
 
 /-- Go upwards through the given `tree` starting from the smallest node that
 contains the given `range` and collect all `MacroExpansionInfo`s on the way up.
@@ -84,5 +82,7 @@ def stackMatches (stack : SyntaxStack) (pattern : List $ Option SyntaxNodeKind) 
   (stack
     |>.zipWith (fun (s, _) p => p |>.map (s.isOfKind ·) |>.getD true) pattern
     |>.all id)
+
+abbrev IgnoreFunction := Syntax → SyntaxStack → Options → Bool
 
 end Lean.Linter

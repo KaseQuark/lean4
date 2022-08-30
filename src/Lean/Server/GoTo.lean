@@ -22,7 +22,7 @@ def documentUriFromModule (srcSearchPath : SearchPath) (modName : Name) : IO (Op
   -- resolve symlinks (such as `src` in the build dir) so that files are opened
   -- in the right folder
   let modFname ← IO.FS.realPath modFname
-  return some <| DocumentUri.ofPath modFname
+  return some <| System.Uri.pathToUri modFname
 
 open Elab in
 def locationLinksFromDecl (srcSearchPath : SearchPath) (uri : DocumentUri) (n : Name)

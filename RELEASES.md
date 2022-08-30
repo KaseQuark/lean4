@@ -1,5 +1,142 @@
-Unreleased
+v4.0.0-m5 (07 August 2022)
 ---------
+
+* Update Lake to v4.0.0. See the [v4.0.0 release notes](https://github.com/leanprover/lake/releases/tag/v4.0.0) for detailed changes.
+
+* Mutual declarations in different namespaces are now supported. Example:
+  ```lean
+  mutual
+    def Foo.boo (x : Nat) :=
+      match x with
+      | 0 => 1
+      | x + 1 => 2*Boo.bla x
+
+    def Boo.bla (x : Nat) :=
+      match x with
+      | 0 => 2
+      | x+1 => 3*Foo.boo x
+  end
+  ```
+  A `namespace` is automatically created for the common prefix. Example:
+  ```lean
+  mutual
+    def Tst.Foo.boo (x : Nat) := ...
+    def Tst.Boo.bla (x : Nat) := ...
+  end
+  ```
+  expands to
+  ```lean
+  namespace Tst
+  mutual
+    def Foo.boo (x : Nat) := ...
+    def Boo.bla (x : Nat) := ...
+  end
+  end Tst
+  ```
+
+* Allow users to install their own `deriving` handlers for existing type classes.
+  See example at [Simple.lean](https://github.com/leanprover/lean4/blob/master/tests/pkg/deriving/UserDeriving/Simple.lean).
+
+* Add tactic `congr (num)?`. See doc string for additional details.
+
+* [Missing doc linter](https://github.com/leanprover/lean4/pull/1390)
+
+* `match`-syntax notation now checks for unused alternatives. See issue [#1371](https://github.com/leanprover/lean4/issues/1371).
+
+* Auto-completion for structure instance fields. Example:
+  ```lean
+  example : Nat × Nat := {
+    f -- HERE
+  }
+  ```
+  `fst` now appears in the list of auto-completion suggestions.
+
+* Auto-completion for dotted identifier notation. Example:
+  ```lean
+  example : Nat :=
+    .su -- HERE
+  ```
+  `succ` now appears in the list of auto-completion suggestions.
+
+* `nat_lit` is not needed anymore when declaring `OfNat` instances. See issues [#1389](https://github.com/leanprover/lean4/issues/1389) and [#875](https://github.com/leanprover/lean4/issues/875). Example:
+  ```lean
+  inductive Bit where
+    | zero
+    | one
+
+  instance inst0 : OfNat Bit 0 where
+    ofNat := Bit.zero
+
+  instance : OfNat Bit 1 where
+    ofNat := Bit.one
+
+  example : Bit := 0
+  example : Bit := 1
+  ```
+
+* Add `[elabAsElim]` attribute (it is called `elab_as_eliminator` in Lean 3). Motivation: simplify the Mathlib port to Lean 4.
+
+* `Trans` type class now accepts relations in `Type u`. See this [Zulip issue](https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Calc.20mode/near/291214574).
+
+* Accept unescaped keywords as inductive constructor names. Escaping can often be avoided at use sites via dot notation.
+  ```lean
+  inductive MyExpr
+    | let : ...
+
+  def f : MyExpr → MyExpr
+    | .let ... => .let ...
+  ```
+
+* Throw an error message at parametric local instances such as `[Nat -> Decidable p]`. The type class resolution procedure
+  cannot use this kind of local instance because the parameter does not have a forward dependency.
+  This check can be disabled using `set_option checkBinderAnnotations false`.
+
+* Add option `pp.showLetValues`. When set to `false`, the info view hides the value of `let`-variables in a goal.
+  By default, it is `true` when visualizing tactic goals, and `false` otherwise.
+  See [issue #1345](https://github.com/leanprover/lean4/issues/1345) for additional details.
+
+* Add option `warningAsError`. When set to true, warning messages are treated as errors.
+
+* Support dotted notation and named arguments in patterns. Example:
+  ```lean
+  def getForallBinderType (e : Expr) : Expr :=
+    match e with
+    | .forallE (binderType := type) .. => type
+    | _ => panic! "forall expected"
+  ```
+
+* "jump-to-definition" now works for function names embedded in the following attributes
+  `@[implementedBy funName]`, `@[tactic parserName]`, `@[termElab parserName]`, `@[commandElab parserName]`,
+  `@[builtinTactic parserName]`, `@[builtinTermElab parserName]`, and `@[builtinCommandElab parserName]`.
+   See [issue #1350](https://github.com/leanprover/lean4/issues/1350).
+
+* Improve `MVarId` methods discoverability. See [issue #1346](https://github.com/leanprover/lean4/issues/1346).
+  We still have to add similar methods for `FVarId`, `LVarId`, `Expr`, and other objects.
+  Many existing methods have been marked as deprecated.
+
+* Add attribute `[deprecated]` for marking deprecated declarations. Examples:
+  ```lean
+  def g (x : Nat) := x + 1
+
+  -- Whenever `f` is used, a warning message is generated suggesting to use `g` instead.
+  @[deprecated g]
+  def f (x : Nat) := x + 1
+
+  #check f 0 -- warning: `f` has been deprecated, use `g` instead
+
+  -- Whenever `h` is used, a warning message is generated.
+  @[deprecated]
+  def h (x : Nat) := x + 1
+
+  #check h 0 -- warning: `h` has been deprecated
+  ```
+
+* Add type `LevelMVarId` (and abbreviation `LMVarId`) for universe level metavariable ids.
+  Motivation: prevent meta-programmers from mixing up universe and expression metavariable ids.
+
+* Improve `calc` term and tactic. See [issue #1342](https://github.com/leanprover/lean4/issues/1342).
+
+* [Relaxed antiquotation parsing](https://github.com/leanprover/lean4/pull/1272) further reduces the need for explicit `$x:p` antiquotation kind annotations.
 
 * Add support for computed fields in inductives. Example:
   ```lean
@@ -16,8 +153,8 @@ Unreleased
 
 * Update `a[i]` notation. It is now based on the typeclass
   ```lean
-  class GetElem (Cont : Type u) (Idx : Type v) (Elem : outParam (Type w)) (Dom : outParam (Cont → Idx → Prop)) where
-    getElem (xs : Cont) (i : Idx) (h : Dom xs i) : Elem
+  class GetElem (cont : Type u) (idx : Type v) (elem : outParam (Type w)) (dom : outParam (cont → idx → Prop)) where
+    getElem (xs : cont) (i : idx) (h : dom xs i) : Elem
   ```
   The notation `a[i]` is now defined as follows
   ```lean
@@ -35,13 +172,13 @@ Unreleased
   index `i` is not valid.
   The three new notations are defined as follows:
   ```lean
-  @[inline] def getElem' [GetElem Cont Idx Elem Dom] (xs : Cont) (i : Idx) (h : Dom xs i) : Elem :=
+  @[inline] def getElem' [GetElem cont idx elem dom] (xs : cont) (i : idx) (h : dom xs i) : elem :=
   getElem xs i h
 
-  @[inline] def getElem! [GetElem Cont Idx Elem Dom] [Inhabited Elem] (xs : Cont) (i : Idx) [Decidable (Dom xs i)] : Elem :=
+  @[inline] def getElem! [GetElem cont idx elem dom] [Inhabited elem] (xs : cont) (i : idx) [Decidable (dom xs i)] : elem :=
     if h : _ then getElem xs i h else panic! "index out of bounds"
 
-  @[inline] def getElem? [GetElem Cont Idx Elem Dom] (xs : Cont) (i : Idx) [Decidable (Dom xs i)] : Option Elem :=
+  @[inline] def getElem? [GetElem cont idx elem dom] (xs : cont) (i : idx) [Decidable (dom xs i)] : Option elem :=
     if h : _ then some (getElem xs i h) else none
 
   macro:max x:term noWs "[" i:term "]" noWs "?" : term => `(getElem? $x $i)
@@ -90,7 +227,7 @@ Unreleased
   ```
   Note that `Idx`'s type in `GetElem` does not depend on `Cont`. So, you cannot write the instance `instance : GetElem (Array α) (Fin ??) α fun xs i => ...`, but the Lean library comes equipped with the following auxiliary instance:
   ```lean
-  instance [GetElem Cont Nat Elem Dom] : GetElem Cont (Fin n) Elem fun xs i => Dom xs i where
+  instance [GetElem cont Nat elem dom] : GetElem cont (Fin n) elem fun xs i => dom xs i where
     getElem xs i h := getElem xs i.1 h
   ```
   and helper tactic
@@ -115,8 +252,6 @@ Unreleased
     | n+1 => (n+1) * Nat.fact n
   end Nat
   ```
-
-* Update Lake to v3.2.1. See the [v3.2.1 release notes](https://github.com/leanprover/lake/releases/tag/v3.2.1) for detailed changes.
 
 * Add support for `CommandElabM` monad at `#eval`. Example:
   ```lean

@@ -378,7 +378,7 @@ where
           args := args.set! i param
         return TransformStep.done (mkAppN f args)
       else
-        return TransformStep.visit e
+        return .continue
     transform ctorType (pre := visit)
 
 private def getResultingUniverse : List InductiveType → TermElabM Level
@@ -393,7 +393,7 @@ private def getResultingUniverse : List InductiveType → TermElabM Level
   Return `some ?m` if `u` is of the form `?m + k`.
   Return none if `u` does not contain universe metavariables.
   Throw exception otherwise. -/
-def shouldInferResultUniverse (u : Level) : TermElabM (Option MVarId) := do
+def shouldInferResultUniverse (u : Level) : TermElabM (Option LMVarId) := do
   let u ← instantiateLevelMVars u
   if u.hasMVar then
     match u.getLevelOffset with
@@ -407,7 +407,7 @@ def shouldInferResultUniverse (u : Level) : TermElabM (Option MVarId) := do
   Convert universe metavariables into new parameters. It skips `univToInfer?` (the inductive datatype resulting universe) because
   it should be inferred later using `inferResultingUniverse`.
 -/
-private def levelMVarToParam (indTypes : List InductiveType) (univToInfer? : Option MVarId) : TermElabM (List InductiveType) :=
+private def levelMVarToParam (indTypes : List InductiveType) (univToInfer? : Option LMVarId) : TermElabM (List InductiveType) :=
   go |>.run' 1
 where
   levelMVarToParam' (type : Expr) : StateRefT Nat TermElabM Expr := do
@@ -831,13 +831,13 @@ private def applyComputedFields (indViews : Array InductiveView) : CommandElabM 
         |>.setBool `elaboratingComputedFields true}) <|
     elabCommand <| ← `(mutual $computedFieldDefs* end)
 
-  liftTermElabM indViews[0]!.declName do
+  liftTermElabM do Term.withDeclName indViews[0]!.declName do
     ComputedFields.setComputedFields computedFields
 
 def elabInductiveViews (views : Array InductiveView) : CommandElabM Unit := do
   let view0 := views[0]!
   let ref := view0.ref
-  runTermElabM view0.declName fun vars => withRef ref do
+  runTermElabM fun vars => Term.withDeclName view0.declName do withRef ref do
     mkInductiveDecl vars views
     mkSizeOfInstances view0.declName
     Lean.Meta.IndPredBelow.mkBelow view0.declName
@@ -845,7 +845,7 @@ def elabInductiveViews (views : Array InductiveView) : CommandElabM Unit := do
       mkInjectiveTheorems view.declName
   applyComputedFields views -- NOTE: any generated code before this line is invalid
   applyDerivingHandlers views
-  runTermElabM view0.declName fun _ => withRef ref do
+  runTermElabM fun _ => Term.withDeclName view0.declName do withRef ref do
     for view in views do
       Term.applyAttributesAt view.declName view.modifiers.attrs .afterCompilation
 

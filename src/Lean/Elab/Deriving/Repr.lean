@@ -67,7 +67,7 @@ where
           let x := xs[indVal.numParams + i]!
           let a := mkIdent (← mkFreshUserName `a)
           ctorArgs := ctorArgs.push a
-          let localDecl ← getLocalDecl x.fvarId!
+          let localDecl ← x.fvarId!.getDecl
           if localDecl.binderInfo.isExplicit then
             if (← inferType x).isAppOf indVal.name then
               rhs ← `($rhs ++ Format.line ++ $(mkIdent auxFunName):ident $a:ident max_prec)
@@ -116,14 +116,14 @@ open Command
 
 def mkReprInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
   if (← declNames.allM isInductive) && declNames.size > 0 then
-    let cmds ← liftTermElabM none <| mkReprInstanceCmds declNames
+    let cmds ← liftTermElabM <| mkReprInstanceCmds declNames
     cmds.forM elabCommand
     return true
   else
     return false
 
 builtin_initialize
-  registerBuiltinDerivingHandler `Repr mkReprInstanceHandler
+  registerDerivingHandler `Repr mkReprInstanceHandler
   registerTraceClass `Elab.Deriving.repr
 
 end Lean.Elab.Deriving.Repr

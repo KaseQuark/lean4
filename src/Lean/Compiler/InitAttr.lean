@@ -5,6 +5,7 @@ Authors: Leonardo de Moura
 -/
 import Lean.Environment
 import Lean.Attributes
+import Lean.Elab.InfoTree.Main
 
 namespace Lean
 
@@ -32,15 +33,16 @@ unsafe opaque runModInit (mod : Name) : IO Bool
 @[extern "lean_run_init"]
 unsafe opaque runInit (env : @& Environment) (opts : @& Options) (decl initDecl : @& Name) : IO Unit
 
-unsafe def registerInitAttrUnsafe (attrName : Name) (runAfterImport : Bool) : IO (ParametricAttribute Name) :=
+unsafe def registerInitAttrUnsafe (attrName : Name) (runAfterImport : Bool) (ref : Name) : IO (ParametricAttribute Name) :=
   registerParametricAttribute {
-    name := attrName,
-    descr := "initialization procedure for global references",
+    ref := ref
+    name := attrName
+    descr := "initialization procedure for global references"
     getParam := fun declName stx => do
       let decl ← getConstInfo declName
       match (← Attribute.Builtin.getIdent? stx) with
       | some initFnName =>
-        let initFnName ← resolveGlobalConstNoOverload initFnName
+        let initFnName ← Elab.resolveGlobalConstNoOverloadWithInfo initFnName
         let initDecl ← getConstInfo initFnName
         match getIOTypeArg initDecl.type with
         | none => throwError "initialization function '{initFnName}' must have type of the form `IO <type>`"
@@ -70,13 +72,17 @@ unsafe def registerInitAttrUnsafe (attrName : Name) (runAfterImport : Bool) : IO
   }
 
 @[implementedBy registerInitAttrUnsafe]
-opaque registerInitAttr (attrName : Name) (runAfterImport : Bool) : IO (ParametricAttribute Name)
+private opaque registerInitAttrInner (attrName : Name) (runAfterImport : Bool) (ref : Name) : IO (ParametricAttribute Name)
+
+@[inline]
+def registerInitAttr (attrName : Name) (runAfterImport : Bool) (ref : Name := by exact decl_name%) : IO (ParametricAttribute Name) :=
+  registerInitAttrInner attrName runAfterImport ref
 
 builtin_initialize regularInitAttr : ParametricAttribute Name ← registerInitAttr `init true
 builtin_initialize builtinInitAttr : ParametricAttribute Name ← registerInitAttr `builtinInit false
 
 def getInitFnNameForCore? (env : Environment) (attr : ParametricAttribute Name) (fn : Name) : Option Name :=
-  match attr.getParam env fn with
+  match attr.getParam? env fn with
   | some Name.anonymous => none
   | some n              => some n
   | _                   => none
@@ -94,7 +100,7 @@ def getInitFnNameFor? (env : Environment) (fn : Name) : Option Name :=
   getBuiltinInitFnNameFor? env fn <|> getRegularInitFnNameFor? env fn
 
 def isIOUnitInitFnCore (env : Environment) (attr : ParametricAttribute Name) (fn : Name) : Bool :=
-  match attr.getParam env fn with
+  match attr.getParam? env fn with
   | some Name.anonymous => true
   | _ => false
 

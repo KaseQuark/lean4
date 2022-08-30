@@ -26,8 +26,8 @@ private def expandSimpleMatch (stx : Syntax) (discr : Term) (lhsVar : Ident) (rh
 private def mkUserNameFor (e : Expr) : TermElabM Name := do
   match e with
   /- Remark: we use `mkFreshUserName` to make sure we don't add a variable to the local context that can be resolved to `e`. -/
-  | Expr.fvar fvarId => mkFreshUserName ((← getLocalDecl fvarId).userName)
-  | _                => mkFreshBinderName
+  | .fvar fvarId => mkFreshUserName (← fvarId.getUserName)
+  | _            => mkFreshBinderName
 
 
 /--
@@ -60,9 +60,9 @@ private def elabAtomicDiscr (discr : Syntax) : TermElabM Expr := do
   let term := discr[1]
   match (← isAtomicDiscr? term) with
   | some e@(Expr.fvar fvarId) =>
-    let localDecl ← getLocalDecl fvarId
+    let localDecl ← fvarId.getDecl
     if !isAuxDiscrName localDecl.userName then
-      addTermInfo discr e -- it is not an auxiliary local created by `expandNonAtomicDiscrs?`
+      addTermInfo term e -- it is not an auxiliary local created by `expandNonAtomicDiscrs?`
     else
       instantiateMVars localDecl.value
   | _ => throwErrorAt discr "unexpected discriminant"
@@ -529,7 +529,7 @@ where
       return mkInaccessible (← eraseInaccessibleAnnotations e)
     else
       if e'.isMVar then
-        setMVarTag e'.mvarId! (← read).userName
+        e'.mvarId!.setTag (← read).userName
       modify fun s => { s with patternVars := s.patternVars.push e' }
       return e
 
@@ -635,8 +635,7 @@ where
       if patternVars.contains e then
         unless (← get).visitedFVars.contains fvarId do
           modify fun s => { s with visitedFVars := s.visitedFVars.insert fvarId }
-          let localDecl ← getLocalDecl fvarId
-          visit localDecl.type
+          visit (← fvarId.getType)
           modify fun s => { s with result := s.result.push e }
     | _ => return ()
 
@@ -689,7 +688,7 @@ partial def main (patternVarDecls : Array PatternVarDecl) (ps : Array Expr) (mat
   withTheReader Meta.Context (fun ctx => { ctx with lctx := lctx }) do
     check packed
     unpack packed fun patternVars patterns matchType => do
-      let localDecls ← patternVars.mapM fun x => getLocalDecl x.fvarId!
+      let localDecls ← patternVars.mapM fun x => x.fvarId!.getDecl
       trace[Elab.match] "patternVars: {patternVars}, matchType: {matchType}"
       k localDecls (← patterns.mapM fun p => toPattern p) matchType
 where
@@ -806,6 +805,10 @@ private def elabMatchAltView (discrs : Array Discr) (alt : MatchAltView) (matchT
         withEqs discrs altLHS.patterns fun eqs =>
           withLocalInstances altLHS.fvarDecls do
             trace[Elab.match] "elabMatchAltView: {matchType}"
+            -- connect match-generalized pattern fvars, which are a suffix of `latLHS.fvarDecls`,
+            -- to their original fvars (independently of whether they were cleared successfully) in the info tree
+            for (fvar, baseId) in altLHS.fvarDecls.toArray.reverse.zip toClear.reverse do
+              pushInfoLeaf <| .ofFVarAliasInfo { id := fvar.fvarId, baseId }
             let matchType ← instantiateMVars matchType
             -- If `matchType` is of the form `@m ...`, we create a new metavariable with the current scope.
             -- This improves the effectiveness of the `isDefEq` default approximations
@@ -878,7 +881,7 @@ private def generalize (discrs : Array Discr) (matchType : Expr) (altViews : Arr
           -- For example, if `ys` contains `#[h, h]`, we want to make sure `mkFreshUsername is applied to the first `h`,
           -- since it is already shadowed by the second.
           let ysUserNames ← ys.foldrM (init := #[]) fun ys ysUserNames => do
-            let yDecl ← getLocalDecl ys.fvarId!
+            let yDecl ← ys.fvarId!.getDecl
             let mut yUserName := yDecl.userName
             if ysUserNames.contains yUserName then
               yUserName ← mkFreshUserName yUserName
@@ -922,12 +925,12 @@ where
       trace[Elab.match] "new indices to add as discriminants: {indices}"
       let wildcards ← indices.mapM fun index => do
         if index.isFVar then
-          let localDecl ← getLocalDecl index.fvarId!
+          let localDecl ← index.fvarId!.getDecl
           if localDecl.userName.hasMacroScopes then
             return mkHole ref
           else
             let id := mkIdentFrom ref localDecl.userName
-            `(?$id:ident)
+            `(?$id)
         else
           return mkHole ref
       let altViews  := altViews.map fun altView => { altView with patterns := wildcards ++ altView.patterns }
@@ -981,7 +984,7 @@ where
     let mut toAdd := #[]
     for fvarId in s.fvarSet.toList do
       unless containsFVar discrs fvarId || containsFVar indices fvarId do
-        let localDecl ← getLocalDecl fvarId
+        let localDecl ← fvarId.getDecl
         for indexFVarId in indicesFVar do
           if (← localDeclDependsOn localDecl indexFVarId) then
             toAdd := toAdd.push fvarId
@@ -1009,6 +1012,7 @@ register_builtin_option match.ignoreUnusedAlts : Bool := {
 def reportMatcherResultErrors (altLHSS : List AltLHS) (result : MatcherResult) : TermElabM Unit := do
   unless result.counterExamples.isEmpty do
     withHeadRefOnly <| logError m!"missing cases:\n{Meta.Match.counterExamplesToMessageData result.counterExamples}"
+    return ()
   unless match.ignoreUnusedAlts.get (← getOptions) || result.unusedAltIdxs.isEmpty do
     let mut i := 0
     for alt in altLHSS do
@@ -1148,7 +1152,7 @@ private def expandNonAtomicDiscrs? (matchStx : Syntax) : TermElabM (Option Synta
               throwError "unexpected internal auxiliary discriminant name"
             let discrNew := discr.setArg 1 d
             let r ← loop discrs (discrsNew.push discrNew) foundFVars
-            `(let $d:ident := $term; $r)
+            `(let $d := $term; $r)
           match (← isAtomicDiscr? term) with
           | some x  => if x.isFVar then loop discrs (discrsNew.push discr) (foundFVars.insert x.fvarId!) else addAux
           | none    => addAux
@@ -1241,18 +1245,9 @@ where
   isAtomicIdent (stx : Syntax) : Bool :=
     stx.isIdent && stx.getId.eraseMacroScopes.isAtomic
 
-/--
-Pattern matching. `match e, ... with | p, ... => f | ...` matches each given
-term `e` against each pattern `p` of a match alternative. When all patterns
-of an alternative match, the `match` term evaluates to the value of the
-corresponding right-hand side `f` with the pattern variables bound to the
-respective matched values.
-When not constructing a proof, `match` does not automatically substitute variables
-matched on in dependent variables' types. Use `match (generalizing := true) ...` to
-enforce this. -/
 @[builtinTermElab «match»] def elabMatch : TermElab := fun stx expectedType? => do
   match stx with
-  | `(match $discr:term with | $y:ident => $rhs:term) =>
+  | `(match $discr:term with | $y:ident => $rhs) =>
      if (← isPatternVar y) then expandSimpleMatch stx discr y rhs expectedType? else elabMatchDefault stx expectedType?
   | _ => elabMatchDefault stx expectedType?
 where
@@ -1273,9 +1268,6 @@ builtin_initialize
   registerTraceClass `Elab.match
 
 -- leading_parser:leadPrec "nomatch " >> termParser
-/-- Empty match/ex falso. `nomatch e` is of arbitrary type `α : Sort u` if
-Lean can show that an empty set of patterns is exhaustive given `e`'s type,
-e.g. because it has no constructors. -/
 @[builtinTermElab «nomatch»] def elabNoMatch : TermElab := fun stx expectedType? => do
   match stx with
   | `(nomatch $discrExpr) =>
@@ -1286,7 +1278,7 @@ e.g. because it has no constructors. -/
       elabMatchAux none #[discr] #[] mkNullNode expectedType
     | _ =>
       let d ← mkAuxDiscr
-      let stxNew ← `(let $d:ident := $discrExpr; nomatch $d:ident)
+      let stxNew ← `(let $d := $discrExpr; nomatch $d)
       withMacroExpansion stx stxNew <| elabTerm stxNew expectedType?
   | _ => throwUnsupportedSyntax
 

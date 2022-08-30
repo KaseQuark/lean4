@@ -37,11 +37,11 @@ def ppExpr (e : Expr) : MetaM Format := do
 
 /-- Return a `fmt` representing pretty-printed `e` together with a map from tags in `fmt`
 to `Elab.Info` nodes produced by the delaborator at various subexpressions of `e`. -/
-def ppExprWithInfos (e : Expr) (optsPerPos : Delaborator.OptionsPerPos := {})
+def ppExprWithInfos (e : Expr) (optsPerPos : Delaborator.OptionsPerPos := {}) (delab := Delaborator.delab)
     : MetaM (Format × Std.RBMap Nat Elab.Info compare) := do
   let lctx := (← getLCtx).sanitizeNames.run' { options := (← getOptions) }
   Meta.withLCtx lctx #[] do
-    let (stx, infos) ← delabCore e optsPerPos
+    let (stx, infos) ← delabCore e optsPerPos delab
     let fmt ← ppTerm stx
     return (fmt, infos)
 
@@ -66,7 +66,8 @@ private partial def noContext : MessageData → MessageData
   | MessageData.group msg  => MessageData.group (noContext msg)
   | MessageData.compose msg₁ msg₂ => MessageData.compose (noContext msg₁) (noContext msg₂)
   | MessageData.tagged tag msg => MessageData.tagged tag (noContext msg)
-  | MessageData.node msgs => MessageData.node (msgs.map noContext)
+  | MessageData.trace cls header children collapsed =>
+    MessageData.trace cls (noContext header) (children.map noContext) collapsed
   | msg => msg
 
 -- strip context (including environments with registered pretty printers) to prevent infinite recursion when pretty printing pretty printer error

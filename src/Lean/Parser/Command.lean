@@ -35,7 +35,7 @@ def terminationHint (p : Parser) := terminationHintMany p <|> terminationHint1 p
 def terminationByCore := leading_parser "termination_by' " >> terminationHint termParser
 def decreasingBy := leading_parser "decreasing_by " >> terminationHint Tactic.tacticSeq
 
-def terminationByElement   := leading_parser ppLine >> (ident <|> "_") >> many (ident <|> "_") >> " => " >> termParser >> optional ";"
+def terminationByElement   := leading_parser ppLine >> (ident <|> Term.hole) >> many (ident <|> Term.hole) >> " => " >> termParser >> optional ";"
 def terminationBy          := leading_parser ppLine >> "termination_by " >> many1Indent terminationByElement
 
 def terminationSuffix := optional (terminationBy <|> terminationByCore) >> optional decreasingBy
@@ -77,11 +77,26 @@ def «instance»       := leading_parser Term.attrKind >> "instance" >> optNamed
 def «axiom»          := leading_parser "axiom " >> declId >> ppIndent declSig
 /- As `declSig` starts with a space, "example" does not need a trailing space. -/
 def «example»        := leading_parser "example" >> ppIndent declSig >> declVal
-def ctor             := leading_parser "\n| " >> ppIndent (declModifiers true >> ident >> optDeclSig)
+def ctor             := leading_parser "\n| " >> ppIndent (declModifiers true >> rawIdent >> optDeclSig)
 def derivingClasses  := sepBy1 (group (ident >> optional (" with " >> Term.structInst))) ", "
 def optDeriving      := leading_parser optional (ppLine >> atomic ("deriving " >> notSymbol "instance") >> derivingClasses)
 def computedField    := leading_parser declModifiers true >> ident >> " : " >> termParser >> Term.matchAlts
 def computedFields   := leading_parser "with" >> manyIndent (ppLine >> ppGroup computedField)
+/--
+In Lean, every concrete type other than the universes and every type constructor other than dependent arrows is
+an instance of a general family of type constructions known as inductive types.
+It is remarkable that it is possible to construct a substantial edifice of mathematics based on nothing more than the
+type universes, dependent arrow types, and inductive types; everything else follows from those.
+Intuitively, an inductive type is built up from a specified list of constructor. For example, `List α` is the list of elements of type `α`, and
+is defined as follows
+```
+inductive List (α : Type u) where
+| nil
+| cons (head : α) (tail : List α)
+```
+A list of elements of type `α` is either the empty list, `nil`, or an element `head : α` followed by a list `tail : List α`.
+For more information about [inductive types](https://leanprover.github.io/theorem_proving_in_lean4/inductive_types.html).
+-/
 def «inductive»      := leading_parser "inductive " >> declId >> optDeclSig >> optional (symbol " :=" <|> " where") >>
   many ctor >> optional (ppDedent ppLine >> computedFields) >> optDeriving
 def classInductive   := leading_parser atomic (group (symbol "class " >> "inductive ")) >> declId >> ppIndent optDeclSig >> optional (symbol " :=" <|> " where") >> many ctor >> optDeriving
@@ -128,7 +143,8 @@ def openRenaming     := leading_parser atomic (ident >> "renaming") >> sepBy1 op
 def openOnly         := leading_parser atomic (ident >> " (") >> many1 ident >> ")"
 def openSimple       := leading_parser many1 (checkColGt >> ident)
 def openScoped       := leading_parser "scoped " >> many1 (checkColGt >> ident)
-def openDecl         := openHiding <|> openRenaming <|> openOnly <|> openSimple <|> openScoped
+def openDecl         := withAntiquot (mkAntiquot "openDecl" `Lean.Parser.Command.openDecl (isPseudoKind := true)) <|
+  openHiding <|> openRenaming <|> openOnly <|> openSimple <|> openScoped
 @[builtinCommandParser] def «open»    := leading_parser withPosition ("open " >> openDecl)
 
 @[builtinCommandParser] def «mutual» := leading_parser "mutual " >> many1 (ppLine >> notSymbol "end" >> commandParser) >> ppDedent (ppLine >> "end") >> terminationSuffix
@@ -136,6 +152,8 @@ def initializeKeyword := leading_parser "initialize " <|> "builtin_initialize "
 @[builtinCommandParser] def «initialize» := leading_parser declModifiers false >> initializeKeyword >> optional (atomic (ident >> Term.typeSpec >> Term.leftArrow)) >> Term.doSeq
 
 @[builtinCommandParser] def «in»  := trailing_parser withOpen (" in " >> commandParser)
+
+@[builtinCommandParser] def addDocString := leading_parser docComment >> "add_decl_doc" >> ident
 
 /--
   This is an auxiliary command for generation constructor injectivity theorems for inductive types defined at `Prelude.lean`.
@@ -158,13 +176,31 @@ builtin_initialize
 end Command
 
 namespace Term
-@[builtinTermParser] def «open» := leading_parser:leadPrec "open " >> Command.openDecl >> withOpenDecl (" in " >> termParser)
-@[builtinTermParser] def «set_option» := leading_parser:leadPrec "set_option " >> ident >> ppSpace >> Command.optionValue >> " in " >> termParser
+/--
+`open Foo in e` is like `open Foo` but scoped to a single term.
+It makes the given namespaces available in the term `e`.
+-/
+@[builtinTermParser] def «open» := leading_parser:leadPrec
+  "open " >> Command.openDecl >> withOpenDecl (" in " >> termParser)
+
+/--
+`set_option opt val in e` is like `set_option opt val` but scoped to a single term.
+It sets the option `opt` to the value `val` in the term `e`.
+-/
+@[builtinTermParser] def «set_option» := leading_parser:leadPrec
+  "set_option " >> ident >> ppSpace >> Command.optionValue >> " in " >> termParser
 end Term
 
 namespace Tactic
-@[builtinTacticParser] def «open» := leading_parser:leadPrec "open " >> Command.openDecl >> withOpenDecl (" in " >> tacticSeq)
-@[builtinTacticParser] def «set_option» := leading_parser:leadPrec "set_option " >> ident >> ppSpace >> Command.optionValue >> " in " >> tacticSeq
+/-- `open Foo in tacs` (the tactic) acts like `open Foo` at command level,
+but it opens a namespace only within the tactics `tacs`. -/
+@[builtinTacticParser] def «open» := leading_parser:leadPrec
+  "open " >> Command.openDecl >> withOpenDecl (" in " >> tacticSeq)
+
+/-- `set_option opt val in tacs` (the tactic) acts like `set_option opt val` at command level,
+but it sets the option only within the tactics `tacs`. -/
+@[builtinTacticParser] def «set_option» := leading_parser:leadPrec
+  "set_option " >> ident >> ppSpace >> Command.optionValue >> " in " >> tacticSeq
 end Tactic
 
 end Parser

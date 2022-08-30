@@ -3,7 +3,7 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Daniel Selsam
 -/
-import Std.Data.RBMap
+import Bootstrap.Data.RBMap
 import Lean.Meta.SynthInstance
 import Lean.Util.FindMVar
 import Lean.Util.FindLevelMVar
@@ -68,12 +68,6 @@ register_builtin_option pp.analyze.trustOfScientific : Bool := {
   descr    := "(pretty printer analyzer) always 'pretend' `OfScientific.ofScientific` applications can elab bottom-up"
 }
 
-register_builtin_option pp.analyze.trustCoe : Bool := {
-  defValue := false
-  group    := "pp.analyze"
-  descr    := "(pretty printer analyzer) always assume a coercion can be correctly inserted"
-}
-
 -- TODO: this is an arbitrary special case of a more general principle.
 register_builtin_option pp.analyze.trustSubtypeMk : Bool := {
   defValue := true
@@ -118,7 +112,6 @@ def getPPAnalyzeTrustSubst                  (o : Options) : Bool := o.get pp.ana
 def getPPAnalyzeTrustOfNat                  (o : Options) : Bool := o.get pp.analyze.trustOfNat.name pp.analyze.trustOfNat.defValue
 def getPPAnalyzeTrustOfScientific           (o : Options) : Bool := o.get pp.analyze.trustOfScientific.name pp.analyze.trustOfScientific.defValue
 def getPPAnalyzeTrustId                     (o : Options) : Bool := o.get pp.analyze.trustId.name pp.analyze.trustId.defValue
-def getPPAnalyzeTrustCoe                    (o : Options) : Bool := o.get pp.analyze.trustCoe.name pp.analyze.trustCoe.defValue
 def getPPAnalyzeTrustSubtypeMk              (o : Options) : Bool := o.get pp.analyze.trustSubtypeMk.name pp.analyze.trustSubtypeMk.defValue
 def getPPAnalyzeTrustKnownFOType2TypeHOFuns (o : Options) : Bool := o.get pp.analyze.trustKnownFOType2TypeHOFuns.name pp.analyze.trustKnownFOType2TypeHOFuns.defValue
 def getPPAnalyzeOmitMax                     (o : Options) : Bool := o.get pp.analyze.omitMax.name pp.analyze.omitMax.defValue
@@ -159,13 +152,6 @@ def isIdLike (arg : Expr) : Bool :=
   match arg with
   | Expr.lam _ _ (Expr.bvar ..) .. => true
   | _ => false
-
-def isCoe (e : Expr) : Bool :=
-  -- TODO: `coeSort? Builtins doesn't seem to render them anyway
-  -- TODO: should we delete this function, we want to eagerly expand all coercions
-  e.isAppOfArity ``CoeT.coe 4
-  || (e.isAppOf ``CoeFun.coe && e.getAppNumArgs >= 4)
-  || e.isAppOfArity ``CoeSort.coe 4
 
 def isStructureInstance (e : Expr) : MetaM Bool := do
   match e.isConstructorApp? (← getEnv) with
@@ -243,7 +229,7 @@ where
     | Name.anonymous => false
 
 def mvarName (mvar : Expr) : MetaM Name :=
-  return (← getMVarDecl mvar.mvarId!).userName
+  return (←  mvar.mvarId!.getDecl).userName
 
 def containsBadMax : Level → Bool
   | Level.succ u ..   => containsBadMax u
@@ -418,7 +404,6 @@ mutual
 
       let forceRegularApp : Bool :=
         (getPPAnalyzeTrustSubst (← getOptions) && isSubstLike (← getExpr))
-        || (getPPAnalyzeTrustCoe (← getOptions) && isCoe (← getExpr))
         || (getPPAnalyzeTrustSubtypeMk (← getOptions) && (← getExpr).isAppOfArity ``Subtype.mk 4)
 
       analyzeAppStagedCore { f, fType, args, mvars, bInfos, forceRegularApp } |>.run' {
@@ -627,22 +612,22 @@ open TopDownAnalyze SubExpr
 
 def topDownAnalyze (e : Expr) : MetaM OptionsPerPos := do
   let s₀ ← get
-  traceCtx `pp.analyze do
+  withTraceNode `pp.analyze (fun _ => return e) do
     withReader (fun ctx => { ctx with config := Elab.Term.setElabConfig ctx.config }) do
       let ϕ : AnalyzeM OptionsPerPos := do withNewMCtxDepth analyze; pure (← get).annotations
       try
         let knowsType := getPPAnalyzeKnowsType (← getOptions)
         ϕ { knowsType := knowsType, knowsLevel := knowsType, subExpr := mkRoot e }
           |>.run' { : TopDownAnalyze.State }
-      catch _ =>
-        trace[pp.analyze.error] "failed"
+      catch e =>
+        trace[pp.analyze.error] "failed {e.toMessageData}"
         pure {}
       finally set s₀
 
 builtin_initialize
   registerTraceClass `pp.analyze
-  registerTraceClass `pp.analyze.annotate
-  registerTraceClass `pp.analyze.tryUnify
-  registerTraceClass `pp.analyze.error
+  registerTraceClass `pp.analyze.annotate (inherited := true)
+  registerTraceClass `pp.analyze.tryUnify (inherited := true)
+  registerTraceClass `pp.analyze.error (inherited := true)
 
 end Lean.PrettyPrinter.Delaborator

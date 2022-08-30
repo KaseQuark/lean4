@@ -55,6 +55,11 @@ def attempt (p : Parsec α) : Parsec α := λ it =>
 instance : Alternative Parsec :=
 { failure := fail "", orElse }
 
+protected def run (p : Parsec α) (s : String) : Except String α :=
+  match p s.mkIterator with
+  | Parsec.ParseResult.success _ res => Except.ok res
+  | Parsec.ParseResult.error it err  => Except.error s!"offset {repr it.i.byteIdx}: {err}"
+
 def expectedEndOfInput := "expected end of input"
 
 @[inline]
@@ -86,6 +91,7 @@ def manyChars (p : Parsec Char) : Parsec String := manyCharsCore p ""
 @[inline]
 def many1Chars (p : Parsec Char) : Parsec String := do manyCharsCore p (←p).toString
 
+/-- Parses the given string. -/
 def pstring (s : String) : Parsec String := λ it =>
   let substr := it.extract (it.forward s.length)
   if substr = s then
@@ -118,8 +124,8 @@ def digit : Parsec Char := attempt do
 def hexDigit : Parsec Char := attempt do
   let c ← anyChar
   if ('0' ≤ c ∧ c ≤ '9')
-   ∨ ('a' ≤ c ∧ c ≤ 'a')
-   ∨ ('A' ≤ c ∧ c ≤ 'A') then return c else fail s!"hex digit expected"
+   ∨ ('a' ≤ c ∧ c ≤ 'f')
+   ∨ ('A' ≤ c ∧ c ≤ 'F') then return c else fail s!"hex digit expected"
 
 @[inline]
 def asciiLetter : Parsec Char := attempt do
