@@ -4,7 +4,6 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Daniel Selsam
 -/
 import Lean
-import Bootstrap
 
 open Lean Lean.Meta Lean.Elab Lean.Elab.Term Lean.Elab.Command
 open Lean.PrettyPrinter
@@ -43,7 +42,7 @@ syntax (name := testDelabTD) "#testDelab " term " expecting " term : command
 @[commandElab testDelabTD] def elabTestDelabTD : CommandElab
   | `(#testDelab $stx:term expecting $tgt:term) => liftTermElabM do withDeclName `delabTD do
      let e ← elabTerm stx none
-     let ⟨e, _⟩ ← levelMVarToParam e
+     let e ← levelMVarToParam e
      let e ← instantiateMVars e
      checkDelab e (some tgt)
   | _ => throwUnsupportedSyntax
