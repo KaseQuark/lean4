@@ -68,6 +68,8 @@ abbrev RequestT m := ReaderT RequestContext <| ExceptT RequestError m
 /-- Workers execute request handlers in this monad. -/
 abbrev RequestM := ReaderT RequestContext <| EIO RequestError
 
+abbrev RequestTask.pure (a : α) : RequestTask α := .pure (.ok a)
+
 instance : MonadLift IO RequestM where
   monadLift x := do
     match ←  x.toBaseIO with
@@ -121,7 +123,7 @@ def withWaitFindSnap (doc : EditableDocument) (p : Snapshot → Bool)
     (notFoundX : RequestM β)
     (x : Snapshot → RequestM β)
     : RequestM (RequestTask β) := do
-  let findTask ← doc.cmdSnaps.waitFind? p
+  let findTask := doc.cmdSnaps.waitFind? p
   mapTask findTask <| waitFindSnapAux notFoundX x
 
 /-- See `withWaitFindSnap`. -/
@@ -129,7 +131,7 @@ def bindWaitFindSnap (doc : EditableDocument) (p : Snapshot → Bool)
     (notFoundX : RequestM (RequestTask β))
     (x : Snapshot → RequestM (RequestTask β))
     : RequestM (RequestTask β) := do
-  let findTask ← doc.cmdSnaps.waitFind? p
+  let findTask := doc.cmdSnaps.waitFind? p
   bindTask findTask <| waitFindSnapAux notFoundX x
 
 /-- Create a task which waits for the snapshot containing `lspPos` and executes `f` with it.

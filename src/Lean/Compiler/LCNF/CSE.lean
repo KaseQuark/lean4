@@ -5,6 +5,7 @@ Authors: Leonardo de Moura
 -/
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.ToExpr
+import Lean.Compiler.LCNF.PassManager
 
 namespace Lean.Compiler.LCNF
 
@@ -20,7 +21,6 @@ abbrev M := StateRefT State CompilerM
 
 instance : MonadFVarSubst M where
   getSubst := return (← get).subst
-  modifySubst f := modify fun s => { s with subst := f s.subst }
 
 @[inline] def getSubst : M FVarSubst :=
   return (← get).subst
@@ -34,12 +34,9 @@ instance : MonadFVarSubst M where
 
 def replaceFVar (fvarId fvarId' : FVarId) : M Unit := do
   eraseFVar fvarId
-  addFVarSubst fvarId fvarId'
+  modify fun s => { s with subst := s.subst.insert fvarId (.fvar fvarId') }
 
-end CSE
-
-open CSE in
-partial def Code.cse (code : Code) : CompilerM Code :=
+partial def _root_.Lean.Compiler.LCNF.Code.cse (code : Code) : CompilerM Code :=
   go code |>.run' {}
 where
   goFunDecl (decl : FunDecl) : M FunDecl := do
@@ -93,11 +90,19 @@ where
     | .jmp fvarId args => return code.updateJmp! (← normFVar fvarId) (← normExprs args)
     | .unreach .. => return code
 
+end CSE
+
 /--
 Common sub-expression elimination
 -/
 def Decl.cse (decl : Decl) : CompilerM Decl := do
   let value ← decl.value.cse
   return { decl with value }
+
+def cse : Pass :=
+  .mkPerDeclaration `cse Decl.cse
+
+builtin_initialize
+  registerTraceClass `Compiler.cse (inherited := true)
 
 end Lean.Compiler.LCNF

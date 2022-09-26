@@ -3,35 +3,16 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-#exit -- TODO: port to new LCNF
-import Lean.Compiler.CompilerM
-import Lean.Compiler.Decl
-import Lean.Compiler.Stage1
+import Lean.Util.Recognizers
 import Lean.Compiler.InlineAttrs
+import Lean.Compiler.LCNF.CompilerM
+import Lean.Compiler.LCNF.ElimDead
+import Lean.Compiler.LCNF.Bind
+import Lean.Compiler.LCNF.PrettyPrinter
+import Lean.Compiler.LCNF.Stage1
 
-namespace Lean.Compiler
+namespace Lean.Compiler.LCNF
 namespace Simp
-
-partial def findLambdaCore? (lctx : LocalContext) (e : Expr) : Option LocalDecl :=
-  match e with
-  | .fvar fvarId =>
-    if let some d@(.ldecl (value := v) ..) := lctx.find? fvarId then
-      if v.isLambda then some d else findLambdaCore? lctx v
-    else
-      none
-  | .mdata _ e => findLambdaCore? lctx e
-  | _ => none
-
-partial def findLambda? (e : Expr) : CompilerM (Option LocalDecl) :=
-  return findLambdaCore? (← getLCtx) e
-
-partial def findExpr (e : Expr) (skipMData := true): CompilerM Expr := do
-  match e with
-  | .fvar fvarId =>
-    let some (.ldecl (value := v) ..) ← findDecl? fvarId | return e
-    findExpr v
-  | .mdata _ e' => if skipMData then findExpr e' else return e
-  | _ => return e
 
 /--
 Local function usage information used to decide whether it should be inlined or not.
@@ -41,7 +22,7 @@ a function with `.once`, then it is applied only once. A local function may be m
 a big problem in practice because we run the simplifier multiple times, and this information
 is recomputed from scratch at the beginning of each simplification step.
 -/
-inductive LocalFunInfo where
+inductive FunDeclInfo where
   | /--
     Local function is applied once, and must be inlined.
     -/
@@ -51,39 +32,66 @@ inductive LocalFunInfo where
     if it is small.
     -/
     many
+  | /--
+    Function must be inlined.
+    -/
+    mustInline
   deriving Repr, Inhabited
 
 /--
 Local function declaration statistics.
-
-Remark: we use the `userName` as the key.
 -/
-structure LocalFunInfoMap where
+structure FunDeclInfoMap where
   /--
   Mapping from local function name to inlining information.
   -/
-  map : Std.HashMap Name LocalFunInfo := {}
+  map : Std.HashMap FVarId FunDeclInfo := {}
   deriving Inhabited
 
-def LocalFunInfoMap.format (s : LocalFunInfoMap) : Format := Id.run do
+def FunDeclInfoMap.format (s : FunDeclInfoMap) : CompilerM Format := do
   let mut result := Format.nil
-  for (k, n) in s.map.toList do
-    result := result ++ "\n" ++ f!"{k} ↦ {repr n}"
+  for (fvarId, info) in s.map.toList do
+    let localDecl ← getLocalDecl fvarId
+    result := result ++ "\n" ++ f!"{localDecl.userName} ↦ {repr info}"
   return result
-
-instance : ToFormat LocalFunInfoMap where
-  format := LocalFunInfoMap.format
 
 /--
 Add new occurrence for the local function with binder name `key`.
 -/
-def LocalFunInfoMap.add (s : LocalFunInfoMap) (key : Name) : LocalFunInfoMap :=
+def FunDeclInfoMap.add (s : FunDeclInfoMap) (fvarId : FVarId) : FunDeclInfoMap :=
   match s with
   | { map } =>
-    match map.find? key with
-    | some .once => { map := map.insert key .many }
-    | none       => { map := map.insert key .once }
+    match map.find? fvarId with
+    | some .once => { map := map.insert fvarId .many }
+    | none       => { map := map.insert fvarId .once }
     | _          => { map }
+
+/--
+Add new occurrence for the local function with binder name `key`.
+-/
+def FunDeclInfoMap.addMustInline (s : FunDeclInfoMap) (fvarId : FVarId) : FunDeclInfoMap :=
+  match s with
+  | { map } => { map := map.insert fvarId .mustInline }
+
+partial def findFunDecl? (e : Expr) : CompilerM (Option FunDecl) := do
+  match e with
+  | .fvar fvarId =>
+    if let some decl ← LCNF.findFunDecl? fvarId then
+      return some decl
+    else if let .ldecl (value := v) .. ← getLocalDecl fvarId then
+      findFunDecl? v
+    else
+      return none
+  | .mdata _ e => findFunDecl? e
+  | _ => return none
+
+partial def findExpr (e : Expr) (skipMData := true) : CompilerM Expr := do
+  match e with
+  | .fvar fvarId =>
+    let .ldecl (value := v) .. ← getLocalDecl fvarId | return e
+    findExpr v
+  | .mdata _ e' => if skipMData then findExpr e' else return e
+  | _ => return e
 
 structure Config where
   smallThreshold : Nat := 1
@@ -93,9 +101,17 @@ structure Context where
 
 structure State where
   /--
-  (Approximate) information for deciding whether to inline local function declarations.
+  Free variable substitution. We use it to implement inlining and removing redundant variables `let _x.i := _x.j`
   -/
-  localInfoMap : LocalFunInfoMap := {}
+  subst : FVarSubst := {}
+  /--
+  Track used local declarations to be able to eliminate dead variables.
+  -/
+  used : UsedLocalDecls := {}
+  /--
+  Mapping used to decide whether a local function declaration must be inlined or not.
+  -/
+  funDeclInfoMap : FunDeclInfoMap := {}
   /--
   `true` if some simplification was performed in the current simplification pass.
   -/
@@ -106,16 +122,6 @@ structure State where
   -/
   visited : Nat := 0
   /--
-  Number of `mkLetUsingScope` calls.
-  This is a performance counter.
-  -/
-  mkLet : Nat := 0
-  /--
-  Number of `mkLambda` calls.
-  This is a performance counter.
-  -/
-  mkLambda : Nat := 0
-  /--
   Number of definitions inlined.
   This is a performance counter.
   -/
@@ -125,123 +131,283 @@ structure State where
   This is a performance counter.
   -/
   inlineLocal : Nat := 0
-  deriving Inhabited
 
 abbrev SimpM := ReaderT Context $ StateRefT State CompilerM
 
-/-
-Ensure binder names are unique, and update local function information.
-If `mustInline = true`, then local functions in `e` are marked with binders of the
-form `_mustInline.<idx>`.
-Remark: we used to store the `mustInline` information in the map `localInfoMap`,
-using a `.mustInline` constructor at `LocalFunInfo`. However, this was incorrect
-because there is no guarantee that we will be able to inline all occurrences of the
-function in the current `simp` step. Since, we recompute `localInfoMap` from scratch
-at the beginning of each compiler pass, the information was being lost.
--/
-
-structure Internalize.State where
-  nextIdx : Nat
-  localInfoMap : LocalFunInfoMap
-
-private def updateFunInfo (key : Name) (mustInline : Bool) : StateM Internalize.State Unit :=
-  unless mustInline do
-    modify fun s => { s with localInfoMap := s.localInfoMap.add key  }
-
-/--
-`instantiateRevInternalize` implementation.
--/
-private def instantiateRevInternalizeCore (lctx : LocalContext) (e : Expr) (args : Array Expr) (mustInline : Bool) : StateM Internalize.State Expr :=
-  go e {}
-where
-  /-- Auxiliary functions for instantiating `args` in types. -/
-  inst (e : Expr) (offset : Nat) : Expr :=
-    match e with
-    | .sort .. | .lit .. | .const .. | .mvar .. | .fvar .. => e
-    | .mdata k b => .mdata k (inst b offset)
-    | .proj s i b => .proj s i (inst b offset)
-    | .app f a => if offset >= e.looseBVarRange then e else .app (inst f offset) (inst a offset)
-    | .bvar idx => if idx >= offset then args[args.size - (idx - offset) - 1]! else e
-    | .forallE n d b bi => if offset >= e.looseBVarRange then e else .forallE n (inst d offset) (inst b (offset + 1)) bi
-    | .lam n d b bi => if offset >= e.looseBVarRange then e else .lam n (inst d offset) (inst b (offset + 1)) bi
-    | .letE n t v b nd => if offset >= e.looseBVarRange then e else .letE n (inst t offset) (inst v offset) (inst b (offset + 1)) nd
-
-  go (e : Expr) (ctx : Std.PArray (Option Name)) : StateM Internalize.State Expr := do
-    let instantiate (e : Expr) := if args.size == 0 then e else inst e ctx.size
-    let updtBVar (idx : Nat) :=
-      let offset := ctx.size
-      if idx >= offset then
-        args[args.size - (idx - offset) - 1]!
-      else
-        .bvar idx
-    match e with
-    | .sort .. | .lit .. | .const .. | .mvar .. | .fvar .. => return e
-    | .mdata k b => return .mdata k (← go b ctx)
-    | .proj s i b => return .proj s i (← go b ctx)
-    | .app f a =>
-      let f ← go f ctx
-      let a ← go a ctx
-      match f with
-      | .fvar .. =>
-        match findLambdaCore? lctx f with
-        | some localDecl => updateFunInfo localDecl.userName mustInline
-        | _ => pure ()
-      | .bvar idx =>
-        match ctx[ctx.size - idx - 1]! with
-        | some binderName => updateFunInfo binderName mustInline
-        | none => pure ()
-      | _ => pure ()
-      return .app f a
-    | .bvar idx => return updtBVar idx
-    | .forallE .. => return instantiate e
-    | .lam n d b bi => return .lam n (instantiate d) (← go b (ctx.push none)) bi
-    | .letE binderName type value body nonDep =>
-      let idx ← modifyGet fun { nextIdx, localInfoMap } => (nextIdx, { nextIdx := nextIdx + 1, localInfoMap })
-      let binderName' :=
-        if mustInline && value.isLambda then
-          .num `_mustInline idx
-        else match binderName with
-          | .num p _ => .num p idx
-          | _ => .num binderName idx
-      let type := instantiate type
-      let value ← go value ctx
-      let ctxVal := match value with
-        | .lam .. => some binderName'
-        -- The next two cases simulate findLambdaCore? for `ctx`
-        | .fvar .. => match findLambdaCore? lctx value with
-          | some localDecl => some localDecl.userName
-          | _ => none
-        | .bvar idx => if idx < ctx.size then ctx[ctx.size - idx - 1]! else none
-        | _ => none
-      return .letE binderName' type value (← go body (ctx.push ctxVal)) nonDep
-
-/--
-This function performs the following operations in the given expression in a single pass.
-- Ensure binder names for let-declarations are unique.
-- Update local function information. That is, it updates the map `localInfoMap`.
-- Apply `e.instantiateRev args`.
-
-We use it to "internalize" expressions at startup and when performing inlining.
--/
-def instantiateRevInternalize (e : Expr) (args : Array Expr) (mustInline := false) : SimpM Expr := do
-  let lctx ← getLCtx
-  let nextIdx := (← getThe CompilerM.State).nextIdx
-  let localInfoMap ← modifyGet fun s => (s.localInfoMap, { s with localInfoMap := {} })
-  let (e, { localInfoMap, nextIdx }) := instantiateRevInternalizeCore lctx e args mustInline |>.run { nextIdx, localInfoMap }
-  modifyThe CompilerM.State fun s => { s with nextIdx }
-  modify fun s => { s with localInfoMap }
-  return e
-
-/--
-This function performs the following operations in the given expression in a single pass.
-- Ensure binder names for let-declarations are unique.
-- Update local function information. That is, it updates the map `localInfoMap`.
--/
-def internalize (e : Expr) (mustInline := false) : SimpM Expr := do
-  instantiateRevInternalize e #[] mustInline
+instance : MonadFVarSubst SimpM where
+  getSubst := return (← get).subst
 
 def markSimplified : SimpM Unit :=
   modify fun s => { s with simplified := true }
+
+def incVisited : SimpM Unit :=
+  modify fun s => { s with visited := s.visited + 1 }
+
+def incInline : SimpM Unit :=
+  modify fun s => { s with inline := s.inline + 1 }
+
+def incInlineLocal : SimpM Unit :=
+  modify fun s => { s with inlineLocal := s.inlineLocal + 1 }
+
+partial def updateFunDeclInfo (code : Code) (mustInline := false) : SimpM Unit :=
+  go code
+where
+  go (code : Code) : SimpM Unit := do
+  match code with
+  | .let decl k =>
+    if decl.value.isApp then
+      if let some funDecl ← findFunDecl? decl.value.getAppFn then
+        modify fun s => { s with funDeclInfoMap := s.funDeclInfoMap.add funDecl.fvarId }
+    go k
+  | .fun decl k =>
+    if mustInline then
+      modify fun s => { s with funDeclInfoMap := s.funDeclInfoMap.addMustInline decl.fvarId }
+    go decl.value; go k
+  | .jp decl k => go decl.value; go k
+  | .cases c => c.alts.forM fun alt => go alt.getCode
+  | .return .. | .jmp .. | .unreach .. => return ()
+
+def isOnceOrMustInline (fvarId : FVarId) : SimpM Bool := do
+  match (← get).funDeclInfoMap.map.find? fvarId with
+    | some .once | some .mustInline  => return true
+    | _ => return false
+
+def isSmall (decl : FunDecl) : SimpM Bool :=
+  return decl.value.sizeLe (← read).config.smallThreshold
+
+def shouldInlineLocal (decl : FunDecl) : SimpM Bool := do
+  if (← isOnceOrMustInline decl.fvarId) then
+    return true
+  else
+    isSmall decl
+
+structure InlineCandidateInfo where
+  isLocal : Bool
+  params  : Array Param
+  /-- Value (lambda expression) of the function to be inlined. -/
+  value   : Code
+
+def InlineCandidateInfo.arity : InlineCandidateInfo → Nat
+  | { params, .. } => params.size
+
+def inlineCandidate? (e : Expr) : SimpM (Option InlineCandidateInfo) := do
+  let f := e.getAppFn
+  if let .const declName us ← findExpr f then
+    unless hasInlineAttribute (← getEnv) declName do return none
+    -- TODO: check whether function is recursive or not.
+    -- We can skip the test and store function inline so far.
+    let some decl ← getStage1Decl? declName | return none
+    let numArgs := e.getAppNumArgs
+    let arity := decl.getArity
+    if numArgs < arity then return none
+    let params := decl.instantiateParamsLevelParams us
+    let value := decl.instantiateValueLevelParams us
+    incInline
+    return some {
+      isLocal := false
+      params, value
+    }
+  else if let some decl ← findFunDecl? f then
+    unless (← shouldInlineLocal decl) do return none
+    let numArgs := e.getAppNumArgs
+    let arity := decl.getArity
+    if numArgs < arity then return none
+    incInlineLocal
+    modify fun s => { s with inlineLocal := s.inlineLocal + 1 }
+    return some {
+      isLocal := true
+      params  := decl.params
+      value   := decl.value
+    }
+  else
+    return none
+
+private partial def oneExitPointQuick (c : Code) : Bool :=
+  go c
+where
+  go (c : Code) : Bool :=
+    match c with
+    | .let _ k | .fun _ k => go k
+    -- Approximation, the cases may have many unreachable alternatives, and only reachable.
+    | .cases c => c.alts.size == 1 && c.alts.any fun alt => go alt.getCode
+    -- Approximation, we assume that any code containing join points have more than one exit point
+    | .jp .. | .jmp .. => false
+    | .return .. | .unreach .. => true
+
+def betaReduce (params : Array Param) (code : Code) (args : Array Expr) (mustInline := false) : SimpM Code := do
+  -- TODO: add necessary casts to `args`
+  let mut subst := {}
+  for param in params, arg in args do
+    subst := subst.insert param.fvarId arg
+  let code ← code.internalize subst
+  updateFunDeclInfo code mustInline
+  return code
+
+/--
+If `e` is an application that can be inlined, inline it.
+
+`k?` is the optional "continuation" for `e`, and it may contain loose bound variables
+that need to instantiated with `xs`. That is, if `k? = some k`, then `k.instantiateRev xs`
+is an expression without loose bound variables.
+-/
+partial def inlineApp? (letDecl : LetDecl) (k : Code) : SimpM (Option Code) := do
+  if k matches .unreach .. then return some k
+  let e := letDecl.value
+  let some info ← inlineCandidate? e | return none
+  markSimplified
+  let args := e.getAppArgs
+  let numArgs := args.size
+  trace[Compiler.simp.inline] "inlining {e}"
+  let code ← betaReduce info.params info.value args[:info.arity]
+  let fvarId := letDecl.fvarId
+  if k.isReturnOf fvarId && numArgs == info.arity then
+    /- Easy case, the continuation `k` is just returning the result of the application. -/
+    return code
+  else if oneExitPointQuick code then
+    /-
+    `code` has only one exit point, thus we can attach the continuation directly there,
+    and simplify the result.
+    -/
+    code.bind fun fvarId' => do
+      /- fvarId' is the result of the computation -/
+      if numArgs > info.arity then
+        let decl ← mkAuxLetDecl (mkAppN (.fvar fvarId') args[info.arity:])
+        let k ← replaceFVar k fvarId decl.fvarId
+        return .let decl k
+      else
+        replaceFVar k fvarId fvarId'
+  else
+    /-
+    `code` has multiple exit points, and the continuation is non-trivial
+    Thus, we create an auxiliary join point.
+    -/
+    let jpParam ← mkAuxParam (← inferType (mkAppN e.getAppFn args[:info.arity]))
+    let jpValue ← if numArgs > info.arity then
+      let decl ← mkAuxLetDecl (mkAppN (.fvar jpParam.fvarId) args[info.arity:])
+      let k ← replaceFVar k fvarId decl.fvarId
+      pure <| .let decl k
+    else
+      replaceFVar k fvarId jpParam.fvarId
+    let jpDecl ← mkAuxJpDecl #[jpParam] jpValue
+    let code ← code.bind fun fvarId => return .jmp jpDecl.fvarId #[.fvar fvarId]
+    return Code.jp jpDecl code
+
+/--
+Try to inline a join point.
+-/
+partial def inlineJp? (fvarId : FVarId) (args : Array Expr) : SimpM (Option Code) := do
+  let some decl ← LCNF.findFunDecl? fvarId | return none
+  unless (← shouldInlineLocal decl) do return none
+  betaReduce decl.params decl.value args
+
+def markUsedFVar (fvarId : FVarId) : SimpM Unit :=
+  modify fun s => { s with used := s.used.insert fvarId }
+
+def markUsedExpr (e : Expr) : SimpM Unit :=
+  modify fun s => { s with used := collectLocalDecls s.used e }
+
+def markUsedLetDecl (letDecl : LetDecl) : SimpM Unit :=
+  markUsedExpr letDecl.value
+
+mutual
+partial def markUsedCode (code : Code) : SimpM Unit := do
+  match code with
+  | .let decl k => markUsedLetDecl decl; markUsedCode k
+  | .jp decl k | .fun decl k => markUsedFunDecl decl; markUsedCode k
+  | .return fvarId => markUsedFVar fvarId
+  | .unreach .. => return ()
+  | .jmp fvarId args => markUsedFVar fvarId; args.forM markUsedExpr
+  | .cases c => markUsedFVar c.discr; c.alts.forM fun alt => markUsedCode alt.getCode
+
+partial def markUsedFunDecl (funDecl : FunDecl) : SimpM Unit :=
+  markUsedCode funDecl.value
+end
+
+def isUsed (fvarId : FVarId) : SimpM Bool :=
+  return (← get).used.contains fvarId
+
+def attachCodeDecls (decls : Array CodeDecl) (code : Code) : SimpM Code := do
+  go decls.size code
+where
+  go (i : Nat) (code : Code) : SimpM Code := do
+    if i > 0 then
+      let decl := decls[i-1]!
+      if decl.isPure || (← isUsed decl.fvarId) then
+        match decl with
+        | .let decl => markUsedLetDecl decl; go (i-1) (.let decl code)
+        | .fun decl => markUsedFunDecl decl; go (i-1) (.fun decl code)
+        | .jp decl => markUsedFunDecl decl; go (i-1) (.jp decl code)
+      else
+        eraseFVar decl.fvarId
+        go (i-1) code
+    else
+      return code
+
+def eraseCodeDecls (decls : Array CodeDecl) : SimpM Unit := do
+  decls.forM fun decl => eraseFVar decl.fvarId
+
+/--
+Auxiliary function for projecting "type class dictionary access".
+That is, we are trying to extract one of the type class instance elements.
+Remark: We do not consider parent instances to be elements.
+For example, suppose `e` is `_x_4.1`, and we have
+```
+_x_2 : Monad (ReaderT Bool (ExceptT String Id)) := @ReaderT.Monad Bool (ExceptT String Id) _x_1
+_x_3 : Applicative (ReaderT Bool (ExceptT String Id)) := _x_2.1
+_x_4 : Functor (ReaderT Bool (ExceptT String Id)) := _x_3.1
+```
+Then, we will expand `_x_4.1` since it corresponds to the `Functor` `map` element,
+and its type is not a type class, but is of the form
+```
+{α β : Type u} → (α → β) → ...
+```
+In the example above, the compiler should not expand `_x_3.1` or `_x_2.1` because they are
+type class applications: `Functor` and `Applicative` respectively.
+By eagerly expanding them, we may produce inefficient and bloated code.
+For example, we may be using `_x_3.1` to invoke a function that expects a `Functor` instance.
+By expanding `_x_3.1` we will be just expanding the code that creates this instance.
+
+TODO: explain result
+-/
+partial def inlineProjInst? (e : Expr) : SimpM (Option (Array CodeDecl × FVarId)) := do
+  let .proj _ i s := e | return none
+  let sType ← inferType s
+  unless (← isClass? sType).isSome do return none
+  let eType ← inferType e
+  unless  (← isClass? eType).isNone do return none
+  let (fvarId?, decls) ← visit s [i] |>.run |>.run #[]
+  if let some fvarId := fvarId? then
+    return some (decls, fvarId)
+  else
+    eraseCodeDecls decls
+    return none
+where
+  visit (e : Expr) (projs : List Nat) : OptionT (StateRefT (Array CodeDecl) SimpM) FVarId := do
+    let e ← findExpr e
+    if let .proj _ i s := e then
+      visit s (i :: projs)
+    else if let some (ctorVal, ctorArgs) := e.constructorApp? (← getEnv) then
+      let i :: projs := projs | unreachable!
+      let e := ctorArgs[ctorVal.numParams + i]!
+      if projs.isEmpty then
+        let .fvar fvarId := e | unreachable!
+        return fvarId
+      else
+        visit e projs
+    else
+      let .const declName us := e.getAppFn | failure
+      let some decl ← getStage1Decl? declName | failure
+      guard (decl.getArity == e.getAppNumArgs)
+      let code := decl.instantiateValueLevelParams us
+      let code ← betaReduce decl.params code e.getAppArgs (mustInline := true)
+      visitCode code projs
+
+  visitCode (code : Code) (projs : List Nat) : OptionT (StateRefT (Array CodeDecl) SimpM) FVarId := do
+    match code with
+    | .let decl k => modify (·.push (.let decl)); visitCode k projs
+    | .fun decl k => modify (·.push (.fun decl)); visitCode k projs
+    | .return fvarId => visit (.fvar fvarId) projs
+    | _ => failure
 
 def findCtor (e : Expr) : SimpM Expr := do
   -- TODO: add support for mapping discriminants to constructors in branches
@@ -274,99 +440,171 @@ def simpAppApp? (e : Expr) : OptionT SimpM Expr := do
   markSimplified
   return mkAppN f e.getAppArgs
 
-def isOnceOrMustInline (binderName : Name) : SimpM Bool := do
-  if binderName.getPrefix == `_mustInline then
-    return true
-  else match (← get).localInfoMap.map.find? binderName with
-    | some .once  => return true
-    | _ => return false
+def eraseLocalDecl (fvarId : FVarId) : SimpM Unit := do
+  eraseFVar fvarId
+  markSimplified
 
-def isSmallValue (value : Expr) : SimpM Bool := do
-  lcnfSizeLe value (← read).config.smallThreshold
+/--
+Add substitution `fvarId ↦ val`. `val` is a free variable, or
+it is a type, type former, or `lcErased`.
+-/
+def addSubst (fvarId : FVarId) (val : Expr) : SimpM Unit :=
+  modify fun s => { s with subst := s.subst.insert fvarId val }
 
-def shouldInlineLocal (localDecl : LocalDecl) : SimpM Bool := do
-  if (← isOnceOrMustInline localDecl.userName) then
-    return true
-  else
-    isSmallValue localDecl.value
+/-- Try to apply simple simplifications. -/
+def simpValue? (e : Expr) : SimpM (Option Expr) :=
+  -- TODO: more simplifications
+  simpProj? e <|> simpAppApp? e
 
-structure InlineCandidateInfo where
-  isLocal : Bool
-  arity : Nat
-  /-- Value (lambda expression) of the function to be inlined. -/
-  value : Expr
+mutual
+partial def simpFunDecl (decl : FunDecl) : SimpM FunDecl := do
+  let type ← normExpr decl.type
+  let params ← normParams decl.params
+  let value ← simp decl.value
+  decl.update type params value
 
-def inlineCandidate? (e : Expr) : SimpM (Option InlineCandidateInfo) := do
-  let f := e.getAppFn
-  if let .const declName us ← findExpr f then
-    unless hasInlineAttribute (← getEnv) declName do return none
-    -- TODO: check whether function is recursive or not.
-    -- We can skip the test and store function inline so far.
-    let some decl ← getStage1Decl? declName | return none
-    let numArgs := e.getAppNumArgs
-    let arity := decl.getArity
-    if numArgs < arity then return none
-    let value := decl.value.instantiateLevelParams decl.levelParams us
-    modify fun s => { s with inline := s.inline + 1 }
-    return some {
-      arity, value
-      isLocal := false
-    }
-  else if let some localDecl ← findLambda? f then
-    unless (← shouldInlineLocal localDecl) do return none
-    let numArgs := e.getAppNumArgs
-    let arity := getLambdaArity localDecl.value
-    if numArgs < arity then return none
-    let value := localDecl.value
-    modify fun s => { s with inlineLocal := s.inlineLocal + 1 }
-    return some {
-      arity, value
-      isLocal := true
-    }
+/-- Try to simplify `cases` of `constructor` -/
+partial def simpCasesOnCtor? (cases : Cases) : SimpM (Option Code) := do
+  let discr ← normFVar cases.discr
+  let discrExpr ← findExpr (.fvar discr)
+  let some (ctorVal, ctorArgs) := discrExpr.constructorApp? (← getEnv) | return none
+  let (alt, cases) := cases.extractAlt! ctorVal.name
+  eraseFVarsAt (.cases cases)
+  markSimplified
+  match alt with
+  | .default k => simp k
+  | .alt _ params k =>
+    let fields := ctorArgs[ctorVal.numParams:]
+    for param in params, field in fields do
+      addSubst param.fvarId field
+    let k ← simp k
+    eraseParams params
+    return k
+
+partial def simp (code : Code) : SimpM Code := do
+  incVisited
+  match code with
+  | .let decl k =>
+    let mut decl ← normLetDecl decl
+    if decl.value.isFVar then
+      /- Eliminate `let _x_i := _x_j;` -/
+      addSubst decl.fvarId decl.value
+      eraseLocalDecl decl.fvarId
+      simp k
+    else if let some code ← inlineApp? decl k then
+      eraseFVar decl.fvarId
+      simp code
+    else if let some (decls, fvarId) ← inlineProjInst? decl.value then
+      addSubst decl.fvarId (.fvar fvarId)
+      eraseLocalDecl decl.fvarId
+      let k ← simp k
+      attachCodeDecls decls k
+    else
+      if let some value ← simpValue? decl.value then
+        decl ← decl.updateValue value
+      let k ← simp k
+      if !decl.pure || (← isUsed decl.fvarId) then
+        markUsedLetDecl decl
+        return code.updateLet! decl k
+      else
+        /- Dead variable elimination -/
+        eraseLocalDecl decl.fvarId
+        return k
+  | .fun decl k | .jp decl k =>
+    let mut decl := decl
+    let toBeInlined ← isOnceOrMustInline decl.fvarId
+    if toBeInlined then
+      /-
+      If the declaration will be inlined, it is wasteful to eagerly simplify it.
+      So, we just normalize it (i.e., apply the substitution to it).
+      -/
+      decl ← normFunDecl decl
+    else
+      /-
+      Note that functions in `decl` will be marked as used even if `decl` is not actually used.
+      They will only be deleted in the next pass.
+      -/
+      decl ← simpFunDecl decl
+    let k ← simp k
+    if (← isUsed decl.fvarId) then
+      if toBeInlined then
+        /-
+        `decl` was supposed to be inlined, but there are still references to it.
+        Thus, we must all variables in `decl` as used. Recall it was not eagerly simplified.
+        -/
+        markUsedFunDecl decl
+      return code.updateFun! decl k
+    else
+      /- Dead function elimination -/
+      eraseLocalDecl decl.fvarId
+      return k
+  | .return fvarId =>
+    let fvarId ← normFVar fvarId
+    markUsedFVar fvarId
+    return code.updateReturn! fvarId
+  | .unreach type =>
+    return code.updateUnreach! (← normExpr type)
+  | .jmp fvarId args =>
+    let fvarId ← normFVar fvarId
+    let args ← normExprs args
+    if let some code ← inlineJp? fvarId args then
+      simp code
+    else
+      markUsedFVar fvarId
+      args.forM markUsedExpr
+      return code.updateJmp! fvarId args
+  | .cases c =>
+    if let some k ← simpCasesOnCtor? c then
+      return k
+    else
+      -- TODO: other cases simplifications
+      let discr ← normFVar c.discr
+      let resultType ← normExpr c.resultType
+      markUsedFVar discr
+      let alts ← c.alts.mapMonoM fun alt => return alt.updateCode (← simp alt.getCode)
+      return code.updateCases! resultType discr alts
+
+end
+
+end Simp
+
+open Simp
+
+def Decl.simp? (decl : Decl) : SimpM (Option Decl) := do
+  updateFunDeclInfo decl.value
+  trace[Compiler.simp.inline.info] "{decl.name}:{Format.nest 2 (← (← get).funDeclInfoMap.format)}"
+  traceM `Compiler.simp.step do ppDecl decl
+  let value ← simp decl.value
+  traceM `Compiler.simp.step.new do return m!"{decl.name} :=\n{← ppCode value}"
+  let s ← get
+  trace[Compiler.simp.stat] "{decl.name}, size: {value.size}, # visited: {s.visited}, # inline: {s.inline}, # inline local: {s.inlineLocal}"
+  if (← get).simplified then
+    return some { decl with value }
   else
     return none
 
-/--
-If `e` if a free variable that expands to a valid LCNF terminal `let`-block expression `e'`,
-return `e'`.
--/
-def expandTrivialExpr (e : Expr) : SimpM Expr := do
-  if e.isFVar then
-    let e' ← findExpr e
-    unless e'.isLambda do
-      if e != e' then
-        markSimplified
-        return e'
-  return e
+partial def Decl.simp (decl : Decl) : CompilerM Decl := do
+  if let some decl ← decl.simp? |>.run {} |>.run' {} then
+    -- TODO: bound number of steps?
+    decl.simp
+  else
+    return decl
 
-/--
-Given `value` of the form `let x_1 := v_1; ...; let x_n := v_n; e`,
-return `let x_1; ...; let x_n := v_n; let y : type := e; body`.
+builtin_initialize
+  registerTraceClass `Compiler.simp.inline
+  registerTraceClass `Compiler.simp.inline.info
+  registerTraceClass `Compiler.simp.stat
+  registerTraceClass `Compiler.simp.step
+  registerTraceClass `Compiler.simp.step.new
+  registerTraceClass `Compiler.simp.projInst
 
-This methods assumes `type` and `value` do not have loose bound variables.
+end Lean.Compiler.LCNF
 
-Remark: `body` may have many loose bound variables, and the loose bound variables > 0
-must be lifted by `n`.
--/
-private def mkFlatLet (y : Name) (type : Expr) (value : Expr) (body : Expr) (nonDep : Bool := false) : Expr :=
-  match value with
-  | .letE binderName type value'@(.lam ..) (.bvar 0) nonDep =>
-    /- Easy case that is often generated by `inlineProjInst?` -/
-    .letE binderName type value' body nonDep
-  | _ => go value 0
-where
-  go (value : Expr) (i : Nat) : Expr :=
-    match value with
-    | .letE n t v b d => .letE n t v (go b (i+1)) d
-    | _ => .letE y type value (body.liftLooseBVars 1 i) nonDep
+#exit -- TODO: port rest of file
 
-def mkLetUsingScope (e : Expr) : SimpM Expr := do
-  modify fun s => { s with mkLet := s.mkLet + 1 }
-  Compiler.mkLetUsingScope e
+namespace Lean.Compiler
+namespace Simp
 
-def mkLambda (as : Array Expr) (e : Expr) : SimpM Expr := do
-  modify fun s => { s with mkLambda := s.mkLambda + 1 }
-  Compiler.mkLambda as e
 
 /--
 Helper function for simplifying expressions such as
@@ -408,77 +646,6 @@ private def etaExpand (type : Expr) (value : Expr) : SimpM Expr := do
       let value ← attachJp value k
       mkLambda xs value
 
-/--
-Auxiliary function for projecting "type class dictionary access".
-That is, we are trying to extract one of the type class instance elements.
-Remark: We do not consider parent instances to be elements.
-For example, suppose `e` is `_x_4.1`, and we have
-```
-_x_2 : Monad (ReaderT Bool (ExceptT String Id)) := @ReaderT.Monad Bool (ExceptT String Id) _x_1
-_x_3 : Applicative (ReaderT Bool (ExceptT String Id)) := _x_2.1
-_x_4 : Functor (ReaderT Bool (ExceptT String Id)) := _x_3.1
-```
-Then, we will expand `_x_4.1` since it corresponds to the `Functor` `map` element,
-and its type is not a type class, but is of the form
-```
-{α β : Type u} → (α → β) → ...
-```
-In the example above, the compiler should not expand `_x_3.1` or `_x_2.1` because they are
-type class applications: `Functor` and `Applicative` respectively.
-By eagerly expanding them, we may produce inefficient and bloated code.
-For example, we may be using `_x_3.1` to invoke a function that expects a `Functor` instance.
-By expanding `_x_3.1` we will be just expanding the code that creates this instance.
--/
-partial def inlineProjInst? (e : Expr) : OptionT SimpM Expr := do
-  let .proj _ _ s := e | failure
-  let sType ← inferType s
-  guard (← isClass? sType).isSome
-  let eType ← inferType e
-  guard (← isClass? eType).isNone
-  /-
-  We use `withNewScope` + `mkLetUsingScope` to filter the relevant let-declarations.
-  Recall that we are extracting only one of the type class elements.
-  -/
-  let value ← withNewScope do mkLetUsingScope (← visitProj e)
-  markSimplified
-  let value := simpUsingEtaReduction value
-  let value ← internalize value (mustInline := true)
-  trace[Compiler.simp.projInst] "{e} =>\n{value}"
-  return value
-where
-  visitProj (e : Expr) : OptionT SimpM Expr := do
-    let .proj _ i s := e | unreachable!
-    let s ← visit s
-    if let some (ctorVal, ctorArgs) := s.constructorApp? (← getEnv) then
-      return ctorArgs[ctorVal.numParams + i]!
-    else
-      failure
-
-  visit (e : Expr) : OptionT SimpM Expr := do
-    let e ← findExpr e
-    if e.isConstructorApp (← getEnv) then
-      return e
-    else if e.isProj then
-      /- We may have nested projections as we traverse parent classes. -/
-      visit (← visitProj e)
-    else
-      let .const declName us := e.getAppFn | failure
-      let some decl ← getStage1Decl? declName | failure
-      guard <| decl.getArity == e.getAppNumArgs
-      let value := decl.value.instantiateLevelParams decl.levelParams us
-      let value := value.beta e.getAppArgs
-      /-
-      Here, we just go inside of the let-declaration block without trying to simplify it.
-      Reason: a type class instannce may have many elements, and it does not make sense to simplify
-      all of them when we are extracting only one of them.
-      -/
-      let value ← Compiler.visitLet (m := SimpM) value fun _ value => return value
-      visit value
-
-def betaReduce (e : Expr) (args : Array Expr) : SimpM Expr := do
-  -- TODO: add necessary casts to `args`
-  let result ← instantiateRevInternalize (getLambdaBody e) args
-  return result
 
 /--
 Try "cases on cases" simplification.
@@ -561,23 +728,6 @@ where
     | _ => jpBody
 
 mutual
-/--
-Simplify the given lambda expression.
-If `checkEmptyTypes := true`, then return `fun a_i : t_i => lcUnreachable` if
-`t_i` is the `Empty` type.
--/
-partial def visitLambda (e : Expr) (checkEmptyTypes := false): SimpM Expr :=
-  withNewScope do
-    let (as, e) ← Compiler.visitLambdaCore e
-    if checkEmptyTypes then
-      for a in as do
-        if (← isEmptyType (← inferType a)) then
-          let e := e.instantiateRev as
-          let unreach ← mkLcUnreachable (← inferType e)
-          let r ← mkLambda as unreach
-          return r
-    let e ← mkLetUsingScope (← visitLet e as)
-    mkLambda as e
 
 partial def visitCases (casesInfo : CasesInfo) (e : Expr) : SimpM Expr := do
   let f := e.getAppFn
@@ -600,160 +750,6 @@ partial def visitCases (casesInfo : CasesInfo) (e : Expr) : SimpM Expr := do
       args ← args.modifyM i (visitLambda · (checkEmptyTypes := true))
     return mkAppN f args
 
-/--
-If `e` is an application that can be inlined, inline it.
-
-`k?` is the optional "continuation" for `e`, and it may contain loose bound variables
-that need to instantiated with `xs`. That is, if `k? = some k`, then `k.instantiateRev xs`
-is an expression without loose bound variables.
--/
-partial def inlineApp? (e : Expr) (xs : Array Expr) (k? : Option Expr) : SimpM (Option Expr) := do
-  let some info ← inlineCandidate? e | return none
-  let args := e.getAppArgs
-  let numArgs := args.size
-  trace[Compiler.simp.inline] "inlining {e}"
-  markSimplified
-  if k?.isNone && numArgs == info.arity then
-    /- Easy case, there is no continuation and `e` is not over applied -/
-    visitLet (← betaReduce info.value args)
-  else if (← onlyOneExitPoint info.value) then
-    /- If `info.value` has only one exit point, we don't need to create a new auxiliary join point -/
-    let mut value ← betaReduce info.value args[:info.arity]
-    if numArgs > info.arity then
-      let type ← inferType (mkAppN e.getAppFn args[:info.arity])
-      value := mkFlatLet (← mkAuxLetDeclName) type value (mkAppN (.bvar 0) args[info.arity:])
-    if let some k := k? then
-      let type ← inferType e
-      value := mkFlatLet (← mkAuxLetDeclName) type value k
-    visitLet value xs
-  else
-    /-
-    There is a continuation `k` or `e` is over applied.
-    If `e` is over applied, the extra arguments act as a continuation.
-
-    We create a new join point
-    ```
-    let jp := fun y =>
-      let x := y <extra-arguments> -- if `e` is over applied
-      k
-    ```
-    Recall that `visitLet` incorporates the current continuation
-    to the new join point `jp`.
-    -/
-    let jpDomain ← inferType (mkAppN e.getAppFn args[:info.arity])
-    let binderName ← mkFreshUserName `_y
-    let jp ← withNewScope do
-      let y ← mkLocalDecl binderName jpDomain
-      let body ← if numArgs == info.arity then
-        visitLet k?.get! (xs.push y)
-      else
-        let x ← mkAuxLetDecl (mkAppN y args[info.arity:])
-        if let some k := k? then
-          visitLet k (xs.push x)
-        else
-          visitLet x (xs.push x)
-      let body ← mkLetUsingScope body
-      mkLambda #[y] body
-    let jp ← mkJpDeclIfNotSimple jp
-    let value ← betaReduce info.value args[:info.arity]
-    let value ← attachJp value jp
-    visitLet value
-
-/-- Try to apply simple simplifications. -/
-partial def simpValue? (e : Expr) : SimpM (Option Expr) :=
-  simpProj? e <|> simpAppApp? e <|> inlineProjInst? e
-
-/--
-Let-declaration basic block visitor. `e` may contain loose bound variables that
-still have to be instantiated with `xs`.
--/
-partial def visitLet (e : Expr) (xs : Array Expr := #[]): SimpM Expr := do
-  modify fun s => { s with visited := s.visited + 1 }
-  match e with
-  | .letE binderName type value body nonDep =>
-    let type := type.instantiateRev xs
-    let mut value := value.instantiateRev xs
-    if value.isLambda then
-      unless (← isOnceOrMustInline binderName) do
-        /-
-        If the local function will be inlined anyway, we don't simplify it here,
-        we do it after its is inlined and we have information about the actual arguments.
-        -/
-        value ← visitLambda value
-        unless isJpBinderName binderName || (← isSmallValue value) do
-          /-
-          This lambda is not going to be inlined. So, we eta-expand it IF it is not a join point.
-          Recall that local function declarations that are not join points will be lambda lifted
-          anyway. Eta-expanding here also creates new simplification opportunities for
-          monadic local functions before we perform the lambda-lifting.
-          For example, consider the local function
-          ```
-          let _x.23 := fun xs body =>
-            ...
-            let _x.29 := StateRefT'.lift _x.24
-            let _x.30 := _x.25 _x.29
-            let _x.31 := fun a => ...
-            ReaderT.bind _x.30 _x.31
-          ```
-          The function applications `StateRefT'.lift` and `ReaderT.bind` are not inlined because
-          they are partially applied. After, we eta-expand this code, it will be reduced at this stage.
-          -/
-          value ← etaExpand type value
-    else if let some value' ← simpValue? value then
-      if value'.isLet then
-        let e := mkFlatLet binderName type value' body nonDep
-        let e ← visitLet e xs
-        return e
-      value := value'
-    if value.isFVar then
-      /- Eliminate `let _x_i := _x_j;` -/
-      markSimplified
-      visitLet body (xs.push value)
-    else if let some e ← inlineApp? value xs body then
-      return e
-    else
-      let x ← mkLetDecl binderName type value nonDep
-      visitLet body (xs.push x)
-  | _ =>
-    let e := e.instantiateRev xs
-    if let some value ← simpValue? e then
-      visitLet value
-    else if let some casesInfo ← isCasesApp? e then
-      visitCases casesInfo e
-    else if let some e ← inlineApp? e #[] none then
-      return e
-    else
-      expandTrivialExpr e
-end
-
 end Simp
-
-def Decl.simp? (decl : Decl) : Simp.SimpM (Option Decl) := do
-  let value ← Simp.internalize decl.value
-  trace[Compiler.simp.inline.info] "{decl.name}:{Format.nest 2 (format (← get).localInfoMap)}"
-  trace[Compiler.simp.step] "{decl.name} :=\n{decl.value}"
-  let value ← Simp.visitLambda value
-  trace[Compiler.simp.step.new] "{decl.name} :=\n{value}"
-  let s ← get
-  trace[Compiler.simp.stat] "{decl.name}, size: {← getLCNFSize decl.value}, # visited: {s.visited}, # mkLet: {s.mkLet}, # mkLambda: {s.mkLambda}, # inline: {s.inline}, # inline local: {s.inlineLocal}"
-  if (← get).simplified then
-    return some { decl with value }
-  else
-    return none
-
-partial def Decl.simp (decl : Decl) : CoreM Decl := do
-  if let some decl ← decl.simp? |>.run {} |>.run' {} |>.run' {} then
-    -- TODO: bound number of steps?
-    decl.simp
-  else
-    return decl
-
-builtin_initialize
-  registerTraceClass `Compiler.simp.inline
-  registerTraceClass `Compiler.simp.inline.info
-  registerTraceClass `Compiler.simp.stat
-  registerTraceClass `Compiler.simp.step
-  registerTraceClass `Compiler.simp.step.new
-  registerTraceClass `Compiler.simp.projInst
 
 end Lean.Compiler
