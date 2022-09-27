@@ -233,8 +233,19 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
         let hOut := ctx.hOut
         let applyRequest : JsonRpc.Request ApplyWorkspaceEditParams := { id := "applyEdit", method := "workspace/applyEdit", param := ret.applyParams }
         hOut.writeLspMessage applyRequest
-        return some ret.commands
-      return some { commands? := none}
+        IO.sleep 1000
+        return some {path? := ret.newPath.toArray}
+      return some { path? := none }
+
+def moveCursorAfterZoom (path: Array Nat) (p: Lsp.PlainGoalParams)
+    : RequestM (RequestTask (Option Widget.MoveCursorAfterZoomPosition)) := do
+  let doc ← readDoc
+  let text := doc.meta.text
+  let hoverPos := text.lspPosToUtf8Pos p.position
+  withWaitFindSnap doc (fun s => s.endPos >= hoverPos)
+    (notFoundX := pure none) fun snap => do
+      let pos := Widget.findPos path.toList snap.stx
+      return some { position? := text.utf8PosToLspPos pos , uri? := doc.meta.uri}
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)
     : RequestM (RequestTask (Array DocumentHighlight)) := do

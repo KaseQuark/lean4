@@ -41,6 +41,18 @@ builtin_initialize
    (Option ConvZoomCommands)
     fun ⟨expr, posParams⟩ => (FileWorker.getConvZoomCommands expr posParams)
 
+structure MoveCursorAfterZoomParams where
+  path : Array Nat
+  positionParams : Lsp.PlainGoalParams
+  deriving RpcEncodable
+
+builtin_initialize
+  registerBuiltinRpcProcedure
+    `Lean.Widget.moveCursorAfterZoom
+    MoveCursorAfterZoomParams
+   (Option MoveCursorAfterZoomPosition)
+    fun ⟨path, posParams⟩ => (FileWorker.moveCursorAfterZoom path posParams)
+
 /-- The information that the infoview uses to render a popup
 for when the user hovers over an expression.
 -/

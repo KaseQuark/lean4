@@ -13,8 +13,14 @@ namespace Lean.Widget
 open Server
 
 structure ConvZoomCommands where
-  commands? : Option String
+  path? : Option (Array Nat)
   deriving ToJson, FromJson
+
+structure MoveCursorAfterZoomPosition where
+  position? : Option Lsp.Position
+  uri? : Option String
+  deriving ToJson, FromJson
+
 
 /-- Get the top level expression from a `CodeWithInfos`. -/
 private def getExprFromCodeWithInfos (expression : CodeWithInfos) : Expr := Id.run do
@@ -158,8 +164,12 @@ private partial def extractIndentation (input : String) : String := match "  ".i
   | true => "  " ++ extractIndentation (input.drop 2)
   | false => ""
 
-private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : Syntax := Id.run do
-  if value == "" then return stx
+private structure InsertReturn where
+  stx : Syntax
+  newPath : List Nat
+
+private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
+  if value == "" then return {stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam}
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -216,7 +226,9 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
     while t.parents.size > 0 do
       t := t.up
 
-    return t.cur
+    let newPath := pathBeforeConvParam ++ (pathAfterConv.head! + 1)::0::0::[0]
+
+    return {stx := t.cur, newPath := newPath}
 
   -- we are anywhere else in the `conv` block
   else
@@ -285,17 +297,22 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       | true => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (newval ++ "\n" ++ whitespace)
       | false => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ newval ++ "\n" ++ whitespace)
     let newArgList := match convsMerged with
-      | false => List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
       | true => List.append (argList.take (pathAfterConv.head!) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
+      | false => List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
+    let newPath := match convsMerged with
+     | true => pathBeforeConvParam ++ (pathAfterConvParam.take 4)
+     | false => pathBeforeConvParam ++ (pathAfterConvParam.take 3) ++ [(pathAfterConvParam.get! 3) + 1]
+
     t := t.setCur (t.cur.setArgs newArgList.toArray)
     while t.parents.size > 0 do
       t := t.up
 
-    return t.cur
+    return {stx := t.cur, newPath := newPath}
 
 structure ConvZoomReturn where
   commands : ConvZoomCommands
   applyParams : Lsp.ApplyWorkspaceEditParams
+  newPath : List Nat
 
 def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p : String.Pos) (doc : Lean.Server.FileWorker.EditableDocument): MetaM ConvZoomReturn := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
@@ -323,12 +340,12 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
   -- insert `enter [...]` string into syntax
   let located := (locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) })
   let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval
-  let val := reprint! inserted
+  let val := reprint! inserted.stx
 
   -- insert new syntax into document
   let text := doc.meta.text
 
-  let commands : ConvZoomCommands := { commands? := "" }
+  let commands : ConvZoomCommands := { path? := none}
 
   let mut stop := range.stop.byteIdx + 2
   if p.byteIdx == range.stop.byteIdx then stop := p.byteIdx + 1
@@ -339,6 +356,17 @@ def buildConvZoomCommands (subexprParam : SubexprInfo) (goalParam : InteractiveG
   let edit : Lsp.WorkspaceEdit := { changes? := none, documentChanges? := [textDocumentEdit].toArray , changeAnnotations? := none }
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
 
-  return { commands := commands, applyParams := applyParams }
+  return { commands := commands, applyParams := applyParams, newPath := inserted.newPath }
+
+def findPos (newPathParam : List Nat) (stx : Syntax) : String.Pos := Id.run do
+  let mut t := Syntax.Traverser.fromSyntax stx
+  let mut newPath := newPathParam
+  while !newPath.isEmpty do
+    t := t.down newPath.head!
+    newPath := newPath.tail!
+  let ret := match t.cur.getRange? with
+    | some x => x.stop
+    | none => panic! "couldn't get position"
+  return ret
 
 end Lean.Widget
