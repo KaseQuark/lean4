@@ -169,7 +169,7 @@ private structure InsertReturn where
   newPath : List Nat
 
 private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
-  if value == "" then return {stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam}
+  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam }
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -228,7 +228,7 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
     let newPath := pathBeforeConvParam ++ (pathAfterConv.head! + 1)::0::0::[0]
 
-    return {stx := t.cur, newPath := newPath}
+    return { stx := t.cur, newPath := newPath }
 
   -- we are anywhere else in the `conv` block
   else
@@ -256,8 +256,15 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
     --get whitespace from previous tactic and make new node
     let mut argNr := pathAfterConv.head!
     if argNr != 0 then argNr := argNr - 1
-    let prevArg := reprint! t.cur.getArgs[argNr]!
-    let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
+    let mut prevArg := reprint! t.cur.getArgs[argNr]!
+    let mut splitted := (prevArg.splitOn "\n")
+    -- if there is no `\n`, we take the whitespace from the following node instead
+    while splitted.length == 1 do
+      argNr := argNr + 1
+      prevArg := reprint! t.cur.getArgs[argNr]!
+      splitted := (prevArg.splitOn "\n")
+
+    let mut whitespaceLine := splitted.reverse.head!
     let mut whitespace := extractIndentation whitespaceLine
 
     -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
@@ -307,7 +314,7 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
     while t.parents.size > 0 do
       t := t.up
 
-    return {stx := t.cur, newPath := newPath}
+    return { stx := t.cur, newPath := newPath }
 
 structure ConvZoomReturn where
   commands : ConvZoomCommands
