@@ -23,13 +23,12 @@ structure MoveCursorAfterZoomPosition where
 
 
 /-- Get the top level expression from a `CodeWithInfos`. -/
-private def getExprFromCodeWithInfos (expression : CodeWithInfos) : Expr := Id.run do
-  match expression with
-    | TaggedText.tag t _ =>
-      match t.info.val.info with
-        | Lean.Elab.Info.ofTermInfo i => return i.expr
-        | _ => panic! "no expression"
-    | _ => panic! "no expression"
+private def getExprFromCodeWithInfos : CodeWithInfos → Expr
+  | TaggedText.tag t _ =>
+    match t.info.val.info with
+      | Lean.Elab.Info.ofTermInfo i => i.expr
+      | _ => panic! "no info"
+  | _ => panic! "no tag"
 
 private structure SolveReturn where
   expr : Expr
@@ -52,7 +51,7 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
         explicitList := false::explicitList
       descExp := descExp.appFn!
 
-    -- we get the correct `enter` command
+    -- we get the correct `enter` command by subtracting the number of `true`s in our list
     let mut list := listParam
     let mut length := count
     explicitList := List.reverse explicitList
@@ -74,22 +73,20 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
 
   | Expr.lam n _ b _ => do
     let name := match n with
-      | Name.anonymous => "anonymus"
       | Name.str _ s => s
-      | Name.num _ _ => toString (listParam.head! + 1)
+      | _ => panic! "no name found"
     return { expr := b, val? := name, listRest := listParam.tail! }
 
   | Expr.forallE n _ b _ => do
     let name := match n with
-      | Name.anonymous => "anonymus"
       | Name.str _ s => s
-      | Name.num _ _ => toString (listParam.head! + 1)
+      | _ => panic! "no name found"
     return { expr := b, val? := name, listRest := listParam.tail! }
 
   | Expr.mdata _ b => do
     match b with
-      | Expr.mdata _ _ => return {expr := b, val? := none, listRest := listParam }
-      | _ => return {expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
+      | Expr.mdata _ _ => return { expr := b, val? := none, listRest := listParam }
+      | _ => return { expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
 
   | _ => do
     return { expr := ←(Lean.Core.viewSubexpr listParam.head! expr), val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
@@ -143,11 +140,11 @@ private def locate (stx : Syntax) (pos : String.Pos) : LocateReturn := Id.run do
   --the cursor is at the `conv` atom, we need to do some extra work
   if reprint! t.cur == "conv " then
     path := path.tail!
-    pathAfterConv := [3]
+    pathAfterConv := [t.up.cur.getArgs.size - 2]
 
   -- the cursor is in front of the first tactic, we need to do some extra work
   else if pathAfterConv == [] then
-    pathAfterConv := [3]
+    pathAfterConv := [t.cur.getArgs.size - 2]
 
   -- the cursor is in front of another tactic, we need to do some extra work
   else if pathAfterConv.length == 3 then
@@ -156,7 +153,7 @@ private def locate (stx : Syntax) (pos : String.Pos) : LocateReturn := Id.run do
     while rangeList'.head!.stop < pos do
       ctr := ctr + 1
       rangeList' := rangeList'.tail!
-    pathAfterConv := List.append pathAfterConv ((ctr-1)::0::0::[])
+    pathAfterConv := List.append pathAfterConv ((ctr-1)::0::[0])
 
   return {pathBeforeConv := path.reverse, pathAfterConv := pathAfterConv }
 
@@ -189,11 +186,11 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       pathBeforeConv' := pathBeforeConv'.tail!
     t := t.up
 
-    --get whitespace
+    --get previous whitespace
     let argNr := pathBeforeConv'.head! - 1
     let prevArg := reprint! t.cur.getArgs[argNr]!
-    let mut whitespaceLine := (prevArg.splitOn "\n").reverse.head!
-    let mut previousWhitespace :=  extractIndentation whitespaceLine
+    let mut previousIndentationLine := (prevArg.splitOn "\n").reverse.head!
+    let mut previousIndentation :=  extractIndentation previousIndentationLine
 
     -- move back down to `conv`
     t := t.down pathBeforeConv'.head!
@@ -203,17 +200,17 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
     -- we also need the whitespace fron the `=>` node
     let arrow := reprint! t.cur.getArgs[pathAfterConv.head!]!
-      let mut arrowWhitespaceLine := (arrow.splitOn "\n").reverse.head!
-      let mut arrowWhitespace := extractIndentation arrowWhitespaceLine
+    let mut arrowIndentationLine := (arrow.splitOn "\n").reverse.head!
+    let mut arrowIndentation := extractIndentation arrowIndentationLine
 
     let mut newNode := Syntax.missing
     --if there is an empty conv body, we need to remove the newlines from the `=>`
-    if reprint! t.cur.getArgs[pathAfterConv.head! + 1]! == "" || previousWhitespace == arrowWhitespace then
+    if previousIndentation == arrowIndentation then
       let newArrow := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) "=>\n"
       t := t.setCur (t.cur.setArgs (List.append (t.cur.getArgs.toList.take pathAfterConv.head!) (newArrow::t.cur.getArgs.toList.drop (pathAfterConv.head! + 1))).toArray)
-      newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) ("  " ++ previousWhitespace ++ value ++ "\n" ++ arrowWhitespace)
+      newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) ("  " ++ previousIndentation ++ value ++ "\n" ++ arrowIndentation)
     else
-      newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (value ++ "\n" ++ arrowWhitespace)
+      newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (value ++ "\n" ++ arrowIndentation)
 
     -- move down to args of `conv`
     t := t.down (pathAfterConv.head! + 1)
@@ -255,37 +252,36 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
 
     --get whitespace from previous tactic and make new node
     let mut argNr := pathAfterConv.head!
-    if argNr != 0 then argNr := argNr - 1
-    let mut prevArg := reprint! t.cur.getArgs[argNr]!
-    let mut splitted := (prevArg.splitOn "\n")
-    -- if there is no `\n`, we take the whitespace from the following node instead
-    while splitted.length == 1 do
-      argNr := argNr + 1
-      prevArg := reprint! t.cur.getArgs[argNr]!
-      splitted := (prevArg.splitOn "\n")
+    let mut indentation := ""
+    if argNr == 0 then
+      -- in this case, we need to grab the whitespace from `=>`
+      let mut indentationLine := ((reprint! t.up.up.up.cur).splitOn "\n").tail!.head!
+      indentation := extractIndentation indentationLine
+    else
+      argNr := argNr - 1
+      let mut prevArg := reprint! t.cur.getArgs[argNr]!
+      let mut splitted := (prevArg.splitOn "\n")
+      -- if there is no `\n`, we take the whitespace from the following node instead
+      while splitted.length == 1 do
+        argNr := argNr + 1
+        prevArg := reprint! t.cur.getArgs[argNr]!
+        splitted := (prevArg.splitOn "\n")
 
-    let mut whitespaceLine := splitted.reverse.head!
-    let mut whitespace := extractIndentation whitespaceLine
+      let mut indentationLine := splitted.reverse.head!
+      indentation := extractIndentation indentationLine
 
     -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
     -- and remove some at the end.
-    let mut frontWhitespace := ""
+    let mut frontIndentation := ""
     if pathAfterConv.head! == t.cur.getArgs.size - 1 then
-      -- in this case, we only have one tactic in the conv block, so we need to grab the whitespace from `=>`
-      if t.cur.getArgs.size == 1 then
-        let mut helperT := t
-        for _ in [:3] do
-          helperT := helperT.up
-        whitespaceLine := ((reprint! helperT.cur).splitOn "\n").tail!.head!
-        whitespace := extractIndentation whitespaceLine
       let lastArg := reprint! t.cur.getArgs[ t.cur.getArgs.size - 1]!
-      let mut secondWhitespaceLine := (lastArg.splitOn "\n").reverse.head!
-      let mut secondWhitespace := extractIndentation secondWhitespaceLine
+      let mut lastArgIndentationLine := (lastArg.splitOn "\n").reverse.head!
+      let mut lastArgIndentation := extractIndentation lastArgIndentationLine
 
-      let numOfWhitespace := whitespace.length - secondWhitespace.length
+      let numOfWhitespace := indentation.length - lastArgIndentation.length
       for _ in [:numOfWhitespace] do
-        frontWhitespace := frontWhitespace ++ " "
-      whitespace := whitespace.drop numOfWhitespace
+        frontIndentation := frontIndentation ++ " "
+      indentation := indentation.drop numOfWhitespace
 
     -- add new node to syntax and move to the very top
     let mut argList := []
@@ -301,14 +297,14 @@ private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAf
       argList := t.cur.getArgs.toList
 
     let newNode := match convsMerged with
-      | true => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (newval ++ "\n" ++ whitespace)
-      | false => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontWhitespace ++ newval ++ "\n" ++ whitespace)
+      | true => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (newval ++ "\n" ++ indentation)
+      | false => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontIndentation ++ newval ++ "\n" ++ indentation)
     let newArgList := match convsMerged with
       | true => List.append (argList.take (pathAfterConv.head!) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
       | false => List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
     let newPath := match convsMerged with
-     | true => pathBeforeConvParam ++ (pathAfterConvParam.take 4)
-     | false => pathBeforeConvParam ++ (pathAfterConvParam.take 3) ++ [(pathAfterConvParam.get! 3) + 1]
+      | true => pathBeforeConvParam ++ (pathAfterConvParam.take 4)
+      | false => pathBeforeConvParam ++ (pathAfterConvParam.take 3) ++ [(pathAfterConvParam.get! 3) + 1]
 
     t := t.setCur (t.cur.setArgs newArgList.toArray)
     while t.parents.size > 0 do
