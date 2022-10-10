@@ -213,8 +213,8 @@ def handlePlainTermGoal (p : PlainTermGoalParams)
       range := goal.range
     }
 
-def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
-    : RequestM (RequestTask (Option Widget.ConvZoomCommands)) := do
+def insertEnter (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
+    : RequestM (RequestTask (Option Widget.NewEnterPath)) := do
   let t ← getInteractiveGoals p
   let ctx ← read
   let goals := match t.get with
@@ -229,12 +229,12 @@ def getConvZoomCommands (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
     (notFoundX := pure none) fun snap => do
       if goals[0]!.goalPrefix == "| " then
         let ret ← (expr.info.val.ctx.runMetaM expr.info.val.info.lctx
-          (Widget.buildConvZoomCommands expr goals[0]! snap.stx hoverPos doc))
+          (Widget.insertEnter expr goals[0]! snap.stx hoverPos doc))
         let hOut := ctx.hOut
         let applyRequest : JsonRpc.Request ApplyWorkspaceEditParams := { id := "applyEdit", method := "workspace/applyEdit", param := ret.applyParams }
         hOut.writeLspMessage applyRequest
         IO.sleep 1000
-        return some {path? := ret.newPath.toArray}
+        return some ret.newPath
       return some { path? := none }
 
 def moveCursorAfterZoom (path: Array Nat) (p: Lsp.PlainGoalParams)

@@ -36,10 +36,10 @@ structure ConvZoomParams where
 
 builtin_initialize
   registerBuiltinRpcProcedure
-    `Lean.Widget.getConvZoomCommands
+    `Lean.Widget.insertEnter
     ConvZoomParams
-   (Option ConvZoomCommands)
-    fun ⟨expr, posParams⟩ => (FileWorker.getConvZoomCommands expr posParams)
+   (Option NewEnterPath)
+    fun ⟨expr, posParams⟩ => (FileWorker.insertEnter expr posParams)
 
 structure MoveCursorAfterZoomParams where
   path : Array Nat
