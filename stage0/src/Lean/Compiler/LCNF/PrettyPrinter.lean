@@ -5,6 +5,7 @@ Authors: Leonardo de Moura
 -/
 import Lean.PrettyPrinter
 import Lean.Compiler.LCNF.CompilerM
+import Lean.Compiler.LCNF.Internalize
 
 namespace Lean.Compiler.LCNF
 
@@ -29,9 +30,11 @@ private def prefixJoin (pre : Format) (as : Array α) (f : α → M Format) : M 
     result := f!"{result}{pre}{← f a}"
   return result
 
-def ppFVar (fvarId : FVarId) : M Format := do
-  let localDecl ← getLocalDecl fvarId
-  return format localDecl.userName
+def ppFVar (fvarId : FVarId) : M Format :=
+  try
+    return format (← getBinderName fvarId)
+  catch _ =>
+    return format fvarId.name
 
 def ppExpr (e : Expr) : M Format := do
   Meta.ppExpr e |>.run' { lctx := (← read) }
@@ -40,7 +43,10 @@ def ppArg (e : Expr) : M Format := do
   if e.isFVar then
     ppFVar e.fvarId!
   else if pp.explicit.get (← getOptions) then
-    ppExpr e
+    if e.isConst || e.isProp || e.isType0 then
+      ppExpr e
+    else
+      return Format.paren (←  ppExpr e)
   else
     return "_"
 
@@ -58,10 +64,11 @@ def ppValue (e : Expr) : M Format := do
   | _ => ppExpr e
 
 def ppParam (param : Param) : M Format := do
+  let borrow := if param.borrow then "@&" else ""
   if pp.funBinderTypes.get (← getOptions) then
-    return Format.paren f!"{param.binderName} : {← ppExpr param.type}"
+    return Format.paren f!"{param.binderName} : {borrow}{← ppExpr param.type}"
   else
-    return format param.binderName
+    return format s!"{borrow}{param.binderName}"
 
 def ppParams (params : Array Param) : M Format := do
   prefixJoin " " params ppParam
@@ -72,9 +79,12 @@ def ppLetDecl (letDecl : LetDecl) : M Format := do
   else
     return f!"let {letDecl.binderName} := {← ppValue letDecl.value}"
 
+def getFunType (ps : Array Param) (type : Expr) : CoreM Expr :=
+  instantiateForall type (ps.map (mkFVar ·.fvarId))
+
 mutual
   partial def ppFunDecl (funDecl : FunDecl) : M Format := do
-    return f!"{funDecl.binderName}{← ppParams funDecl.params} :={indentD (← ppCode funDecl.value)}"
+    return f!"{funDecl.binderName}{← ppParams funDecl.params} : {← ppExpr (← getFunType funDecl.params funDecl.type)} :={indentD (← ppCode funDecl.value)}"
 
   partial def ppAlt (alt : Alt) : M Format := do
     match alt with
@@ -103,6 +113,30 @@ def ppCode (code : Code) : CompilerM Format :=
 
 def ppDecl (decl : Decl) : CompilerM Format :=
   PP.run do
-    return f!"def {decl.name}{← PP.ppParams decl.params} :={indentD (← PP.ppCode decl.value)}"
+    return f!"def {decl.name}{← PP.ppParams decl.params} : {← PP.ppExpr (← PP.getFunType decl.params decl.type)} :={indentD (← PP.ppCode decl.value)}"
+
+def ppFunDecl (decl : FunDecl) : CompilerM Format :=
+  PP.run do
+    return f!"fun {← PP.ppFunDecl decl}"
+
+/--
+Similar to `ppDecl`, but in `CoreM`, and it does not assume
+`decl` has already been internalized.
+
+This function is used for debugging purposes.
+-/
+def ppDecl' (decl : Decl) : CoreM Format := do
+  /-
+  We save/restore the state to make sure we do not affect the next free variable id.
+  -/
+  let s ← get
+  try
+    go |>.run {}
+  finally
+    set s
+where
+  go : CompilerM Format := do
+    let decl ← decl.internalize
+    ppDecl decl
 
 end Lean.Compiler.LCNF

@@ -3,12 +3,8 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
-import Lean.Modifiers
-import Lean.DocString
 import Lean.Structure
 import Lean.Elab.Attributes
-import Lean.Elab.Exception
-import Lean.Elab.DeclUtil
 
 namespace Lean.Elab
 
@@ -188,9 +184,12 @@ def mkDeclName (currNamespace : Name) (modifiers : Modifiers) (shortName : Name)
   match modifiers.visibility with
   | Visibility.protected =>
     match currNamespace with
-    | .str _ s => pure (declName, Name.mkSimple s ++ shortName)
-    | _ => throwError "protected declarations must be in a namespace"
-  | _ => pure (declName, shortName)
+    | .str _ s => return (declName, Name.mkSimple s ++ shortName)
+    | _ =>
+      if shortName.isAtomic then
+        throwError "protected declarations must be in a namespace"
+      return (declName, shortName)
+  | _ => return (declName, shortName)
 
 /--
   `declId` is of the form

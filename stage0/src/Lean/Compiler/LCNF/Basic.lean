@@ -20,6 +20,7 @@ structure Param where
   fvarId     : FVarId
   binderName : Name
   type       : Expr
+  borrow     : Bool
   deriving Inhabited, BEq
 
 def Param.toExpr (p : Param) : Expr :=
@@ -35,7 +36,6 @@ structure LetDecl where
   binderName : Name
   type : Expr
   value : Expr
-  pure : Bool
   deriving Inhabited, BEq
 
 structure FunDeclCore (Code : Type) where
@@ -70,6 +70,15 @@ abbrev Alt := AltCore Code
 abbrev FunDecl := FunDeclCore Code
 abbrev Cases := CasesCore Code
 
+/--
+Return the constructor names that have an explicit (non-default) alternative.
+-/
+def CasesCore.getCtorNames (c : Cases) : NameSet :=
+  c.alts.foldl (init := {}) fun ctorNames alt =>
+    match alt with
+    | .default _ => ctorNames
+    | .alt ctorName .. => ctorNames.insert ctorName
+
 inductive CodeDecl where
   | let (decl : LetDecl)
   | fun (decl : FunDecl)
@@ -79,9 +88,17 @@ inductive CodeDecl where
 def CodeDecl.fvarId : CodeDecl → FVarId
   | .let decl | .fun decl | .jp decl => decl.fvarId
 
-def CodeDecl.isPure : CodeDecl → Bool
-  | .let decl => decl.pure
-  | .fun .. | .jp .. => true
+def attachCodeDecls (decls : Array CodeDecl) (code : Code) : Code :=
+  go decls.size code
+where
+  go (i : Nat) (code : Code) : Code :=
+    if i > 0 then
+      match decls[i-1]! with
+      | .let decl => go (i-1) (.let decl code)
+      | .fun decl => go (i-1) (.fun decl code)
+      | .jp decl => go (i-1) (.jp decl code)
+    else
+      code
 
 mutual
   private unsafe def eqImp (c₁ c₂ : Code) : Bool :=
@@ -129,6 +146,15 @@ instance : BEq FunDecl where
 def AltCore.getCode : Alt → Code
   | .default k => k
   | .alt _ _ k => k
+
+def AltCore.getParams : Alt → Array Param
+  | .default _ => #[]
+  | .alt _ ps _ => ps
+
+def AltCore.forCodeM [Monad m] (alt : Alt) (f : Code → m Unit) : m Unit := do
+  match alt with
+  | .default k => f k
+  | .alt _ _ k => f k
 
 private unsafe def updateAltCodeImp (alt : Alt) (k' : Code) : Alt :=
   match alt with
@@ -251,8 +277,15 @@ def CasesCore.extractAlt! (cases : Cases) (ctorName : Name) : Alt × Cases :=
   else
     unreachable!
 
+def AltCore.mapCodeM [Monad m] (alt : Alt) (f : Code → m Code) : m Alt := do
+  return alt.updateCode (← f alt.getCode)
+
 def Code.isDecl : Code → Bool
   | .let .. | .fun .. | .jp .. => true
+  | _ => false
+
+def Code.isFun : Code → Bool
+  | .fun .. => true
   | _ => false
 
 def Code.isReturnOf : Code → FVarId → Bool
@@ -288,6 +321,17 @@ where
     | .jmp .. => inc
     | .return .. | unreach .. => return ()
 
+partial def Code.forM [Monad m] (c : Code) (f : Code → m Unit) : m Unit :=
+  go c
+where
+  go (c : Code) : m Unit := do
+    f c
+    match c with
+    | .let _ k => go k
+    | .fun decl k | .jp decl k => go decl.value; go k
+    | .cases c => c.alts.forM fun alt => go alt.getCode
+    | .unreach .. | .return .. | .jmp .. => return ()
+
 /--
 Declaration being processed by the Lean to Lean compiler passes.
 -/
@@ -315,12 +359,69 @@ structure Decl where
   through compiler passes.
   -/
   value : Code
+  /--
+  We set this flag to true during LCNF conversion. When we receive
+  a block of functions to be compiled, we set this flag to `true`
+  if there is an application to the function in the block containing
+  it. This is an approximation, but it should be good enough because
+  in the frontend, we invoke the compiler with blocks of strongly connected
+  components only.
+  We use this information to control inlining.
+  -/
+  recursive : Bool := false
+  /--
+  We set this flag to false during LCNF conversion if the Lean function
+  associated with this function was tagged as partial or unsafe. This
+  information affects how static analyzers treat function applications
+  of this kind. See `DefinitionSafety`.
+  `partial` and `unsafe` functions may not be terminating, but Lean
+  functions terminate, and some static analyzers exploit this
+  fact. So, we use the following semantics. Suppose whe hav a (large) natural
+  number `C`. We consider a nondeterministic model for computation of Lean expressions as
+  follows:
+  Each call to a partial/unsafe function uses up one "recursion token".
+  Prior to consuming `C` recursion tokens all partial functions must be called
+  as normal. Once the model has used up `C` recursion tokens, a subsequent call to
+  a partial function has the following nondeterministic options: it can either call
+  the function again, or return any value of the target type (even a noncomputable one).
+  Larger values of `C` yield less nondeterminism in the model, but even the intersection of
+  all choices of `C` yields nondeterminism where `def loop : A := loop` returns any value of type `A`.
+  The compiler fixes a choice for `C`. This is a fixed constant greater than 2^2^64,
+  which is allowed to be compiler and architecture dependent, and promises that it will
+  produce an execution consistent with every possible nondeterministic outcome of the `C`-model.
+  In the event that different nondeterministic executions disagree, the compiler is required to
+  exhaust resources or output a looping computation.
+  -/
+  safe : Bool := true
+  deriving Inhabited, BEq
 
 def Decl.size (decl : Decl) : Nat :=
   decl.value.size
 
 def Decl.getArity (decl : Decl) : Nat :=
   decl.params.size
+
+/--
+Return `some i` if `decl` is of the form
+```
+def f (a_0 ... a_i ...) :=
+  ...
+  cases a_i
+  | ...
+  | ...
+```
+That is, `f` is a sequence of declarations followed by a `cases` on the parameter `i`.
+We use this function to decide whether we should inline a declaration tagged with
+`[inlineIfReduce]` or not.
+-/
+def Decl.isCasesOnParam? (decl : Decl) : Option Nat :=
+  go decl.value
+where
+  go (code : Code) : Option Nat :=
+    match code with
+    | .let _ k | .jp _ k | .fun _ k => go k
+    | .cases c => decl.params.findIdx? fun param => param.fvarId == c.discr
+    | _ => none
 
 def Decl.instantiateTypeLevelParams (decl : Decl) (us : List Level) : Expr :=
   decl.type.instantiateLevelParams decl.levelParams us
@@ -356,5 +457,75 @@ where
     | .jmp fvarId args => code.updateJmp! fvarId (args.mapMono instExpr)
     | .return .. => code
     | .unreach type => code.updateUnreach! (instExpr type)
+
+mutual
+partial def FunDeclCore.collectUsed (decl : FunDecl) (s : FVarIdSet := {}) : FVarIdSet :=
+  decl.value.collectUsed <| collectParams decl.params <| collectExpr decl.type s
+
+private partial def collectParams (ps : Array Param) (s : FVarIdSet) : FVarIdSet :=
+  ps.foldl (init := s) fun s p => collectExpr p.type s
+
+private partial def collectExprs (es : Array Expr) (s : FVarIdSet) : FVarIdSet :=
+  es.foldl (init := s) fun s e => collectExpr e s
+
+private partial def collectExpr (e : Expr) : FVarIdSet → FVarIdSet :=
+  match e with
+  | .proj _ _ e      => collectExpr e
+  | .forallE _ d b _ => collectExpr b ∘ collectExpr d
+  | .lam _ d b _     => collectExpr b ∘ collectExpr d
+  | .letE ..         => unreachable!
+  | .app f a         => collectExpr f ∘ collectExpr a
+  | .mdata _ b       => collectExpr b
+  | .fvar fvarId     => fun s => s.insert fvarId
+  | _                => id
+
+partial def Code.collectUsed (code : Code) (s : FVarIdSet := {}) : FVarIdSet :=
+  match code with
+  | .let decl k => k.collectUsed <| collectExpr decl.value <| collectExpr decl.type s
+  | .jp decl k | .fun decl k => k.collectUsed <| decl.collectUsed s
+  | .cases c =>
+    let s := s.insert c.discr
+    let s := collectExpr c.resultType s
+    c.alts.foldl (init := s) fun s alt =>
+      match alt with
+      | .default k => k.collectUsed s
+      | .alt _ ps k => k.collectUsed <| collectParams ps s
+  | .return fvarId => s.insert fvarId
+  | .unreach type => collectExpr type s
+  | .jmp fvarId args => collectExprs args <| s.insert fvarId
+end
+
+abbrev collectUsedAtExpr (s : FVarIdSet) (e : Expr) : FVarIdSet :=
+  collectExpr e s
+
+/--
+Traverse the given block of potentially mutually recursive functions
+and mark a declaration `f` as recursive if there is an application
+`f ...` in the block.
+This is an overapproximation, and relies on the fact that our frontend
+computes strongly connected components.
+See comment at `recursive` field.
+-/
+partial def markRecDecls (decls : Array Decl) : Array Decl :=
+  let (_, isRec) := go |>.run {}
+  decls.map fun decl =>
+    if isRec.contains decl.name then
+      { decl with recursive := true }
+    else
+      decl
+where
+  visit (code : Code) : StateM NameSet Unit := do
+    match code with
+    | .jp decl k | .fun decl k => visit decl.value; visit k
+    | .cases c => c.alts.forM fun alt => visit alt.getCode
+    | .unreach .. | .jmp .. | .return .. => return ()
+    | .let decl k =>
+      if let .const declName _ := decl.value.getAppFn then
+        if decls.any (·.name == declName) then
+          modify fun s => s.insert declName
+      visit k
+
+  go : StateM NameSet Unit :=
+    decls.forM fun decl => visit decl.value
 
 end Lean.Compiler.LCNF

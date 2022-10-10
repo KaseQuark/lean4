@@ -12,20 +12,31 @@ import Lean.Elab.Tactic.BuiltinTactic
 namespace Lean.Elab.Tactic.Conv
 open Meta
 
+/--
+Annotate `e` with the LHS annotation. The delaborator displays
+expressions of the form `lhs = rhs` as `lhs` when they have this annotation.
+This is used to implement the infoview for the `conv` mode.
+-/
+def mkLHSGoal (e : Expr) : MetaM Expr :=
+  if let some _ := Expr.eq? e then
+    return mkLHSGoalRaw e
+  else
+    return mkLHSGoalRaw (← whnf e)
+
 /-- Given `lhs`, returns a pair of metavariables `(?rhs, ?newGoal)`
-where `?newGoal : lhs = ?rhs`.-/
-def mkConvGoalFor (lhs : Expr) : MetaM (Expr × Expr) := do
+where `?newGoal : lhs = ?rhs`. `tag` is the name of `newGoal`. -/
+def mkConvGoalFor (lhs : Expr) (tag : Name := .anonymous) : MetaM (Expr × Expr) := do
   let lhsType ← inferType lhs
   let rhs ← mkFreshExprMVar lhsType
-  let targetNew := mkLHSGoal (← mkEq lhs rhs)
-  let newGoal ← mkFreshExprSyntheticOpaqueMVar targetNew
+  let targetNew := mkLHSGoalRaw (← mkEq lhs rhs)
+  let newGoal ← mkFreshExprSyntheticOpaqueMVar targetNew tag
   return (rhs, newGoal)
 
 def markAsConvGoal (mvarId : MVarId) : MetaM MVarId := do
   let target ← mvarId.getType
   if isLHSGoal? target |>.isSome then
     return mvarId -- it is already tagged as LHS goal
-  mvarId.replaceTargetDefEq (mkLHSGoal (← mvarId.getType))
+  mvarId.replaceTargetDefEq (← mkLHSGoal (← mvarId.getType))
 
 /-- Given `lhs`, runs the `conv` tactic with the goal `⊢ lhs = ?rhs`.
 `conv` should produce no remaining goals that are not solvable with refl.
@@ -62,16 +73,17 @@ def getRhs : TacticM Expr :=
 
 /-- `⊢ lhs = rhs` ~~> `⊢ lhs' = rhs` using `h : lhs = lhs'`. -/
 def updateLhs (lhs' : Expr) (h : Expr) : TacticM Unit := do
+  let mvarId ← getMainGoal
   let rhs ← getRhs
-  let newGoal ← mkFreshExprSyntheticOpaqueMVar (mkLHSGoal (← mkEq lhs' rhs))
-  (← getMainGoal).assign (← mkEqTrans h newGoal)
+  let newGoal ← mkFreshExprSyntheticOpaqueMVar (mkLHSGoalRaw (← mkEq lhs' rhs)) (← mvarId.getTag)
+  mvarId.assign (← mkEqTrans h newGoal)
   replaceMainGoal [newGoal.mvarId!]
 
 /-- Replace `lhs` with the definitionally equal `lhs'`. -/
 def changeLhs (lhs' : Expr) : TacticM Unit := do
   let rhs ← getRhs
   liftMetaTactic1 fun mvarId => do
-    mvarId.replaceTargetDefEq (mkLHSGoal (← mkEq lhs' rhs))
+    mvarId.replaceTargetDefEq (mkLHSGoalRaw (← mkEq lhs' rhs))
 
 @[builtinTactic Lean.Parser.Tactic.Conv.whnf] def evalWhnf : Tactic := fun _ =>
    withMainContext do
@@ -85,15 +97,23 @@ def changeLhs (lhs' : Expr) : TacticM Unit := do
    withMainContext do
      changeLhs (← zetaReduce (← getLhs))
 
+/-- Evaluate `sepByIndent conv "; " -/
+def evalSepByIndentConv (stx : Syntax) : TacticM Unit := do
+  for arg in stx.getArgs, i in [:stx.getArgs.size] do
+    if i % 2 == 0 then
+      evalTactic arg
+    else
+      saveTacticInfoForToken arg
+
 @[builtinTactic Lean.Parser.Tactic.Conv.convSeq1Indented] def evalConvSeq1Indented : Tactic := fun stx => do
-  evalTacticSeq1Indented stx
+  evalSepByIndentConv stx[0]
 
 @[builtinTactic Lean.Parser.Tactic.Conv.convSeqBracketed] def evalConvSeqBracketed : Tactic := fun stx => do
   let initInfo ← mkInitialTacticInfo stx[0]
   withRef stx[2] <| closeUsingOrAdmit do
     -- save state before/after entering focus on `{`
     withInfoContext (pure ()) initInfo
-    evalManyTacticOptSemi stx[1]
+    evalSepByIndentConv stx[1]
     evalTactic (← `(tactic| all_goals (try rfl)))
 
 @[builtinTactic Lean.Parser.Tactic.Conv.nestedConv] def evalNestedConv : Tactic := fun stx => do
@@ -116,7 +136,7 @@ def remarkAsConvGoal : TacticM Unit := do
     let target ← mvarId.getType
     if let some (_, _, rhs) ← matchEq? target then
       if rhs.getAppFn.isMVar then
-        mvarId.replaceTargetDefEq (mkLHSGoal target)
+        mvarId.replaceTargetDefEq (← mkLHSGoal target)
       else
         return mvarId
     else
@@ -135,6 +155,9 @@ def remarkAsConvGoal : TacticM Unit := do
       mvarId.replaceTargetDefEq target.mdataExpr!
   focus do evalTactic seq; remarkAsConvGoal
 
+@[builtinTactic Lean.Parser.Tactic.Conv.convTactic] def evalConvTactic : Tactic := fun stx =>
+  evalTactic stx[2]
+
 private def convTarget (conv : Syntax) : TacticM Unit := withMainContext do
    let target ← getMainTarget
    let (targetNew, proof) ← convert target (withTacticInfoContext (← getRef) (evalTactic conv))
@@ -149,8 +172,8 @@ private def convLocalDecl (conv : Syntax) (hUserName : Name) : TacticM Unit := w
 
 @[builtinTactic Lean.Parser.Tactic.Conv.conv] def evalConv : Tactic := fun stx => do
   match stx with
-  | `(tactic| conv%$tk $[at $loc?]? in $p =>%$arr $code) =>
-    evalTactic (← `(tactic| conv%$tk $[at $loc?]? =>%$arr pattern $p; ($code:convSeq)))
+  | `(tactic| conv%$tk $[at $loc?]? in $(occs)? $p =>%$arr $code) =>
+    evalTactic (← `(tactic| conv%$tk $[at $loc?]? =>%$arr pattern $(occs)? $p; ($code:convSeq)))
   | `(tactic| conv%$tk $[at $loc?]? =>%$arr $code) =>
     -- show initial conv goal state between `conv` and `=>`
     withRef (mkNullNode #[tk, arr]) do

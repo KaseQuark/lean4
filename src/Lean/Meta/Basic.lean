@@ -7,17 +7,10 @@ import Lean.Data.LOption
 import Lean.Environment
 import Lean.Class
 import Lean.ReducibilityAttrs
-import Lean.Util.Trace
-import Lean.Util.RecDepth
-import Lean.Util.PPExt
 import Lean.Util.ReplaceExpr
-import Lean.Util.OccursCheck
 import Lean.Util.MonadBacktrack
 import Lean.Compiler.InlineAttrs
 import Lean.Meta.TransparencyMode
-import Lean.Meta.DiscrTreeTypes
-import Lean.Eval
-import Lean.CoreM
 
 /-!
 This module provides four (mutually dependent) goodies that are needed for building the elaborator and tactic frameworks.
@@ -211,8 +204,6 @@ namespace InfoCacheKey
 instance : Hashable InfoCacheKey :=
   ⟨fun ⟨transparency, expr, nargs⟩ => mixHash (hash transparency) <| mixHash (hash expr) (hash nargs)⟩
 end InfoCacheKey
-
-open Std (PersistentArray PersistentHashMap)
 
 abbrev SynthInstanceCache := PersistentHashMap Expr (Option Expr)
 
@@ -710,6 +701,11 @@ def getLocalDeclFromUserName (userName : Name) : MetaM LocalDecl := do
   match (← getLCtx).findFromUserName? userName with
   | some d => pure d
   | none   => throwError "unknown local declaration '{userName}'"
+
+/-- Given a user-facing name for a free variable, return the free variable or throw if not declared. -/
+def getFVarFromUserName (userName : Name) : MetaM Expr := do
+  let d ← getLocalDeclFromUserName userName
+  return Expr.fvar d.fvarId
 
 /--
 Lift a `MkBindingM` monadic action `x` to `MetaM`.

@@ -5,6 +5,7 @@ Authors: Leonardo de Moura
 -/
 import Lean.Meta.Transform
 import Lean.Meta.Match.MatcherInfo
+import Lean.Compiler.ImplementedByAttr
 import Lean.Compiler.LCNF.ToLCNF
 
 namespace Lean.Compiler.LCNF
@@ -74,6 +75,15 @@ private def replaceUnsafeRecNames (value : Expr) : CoreM Expr :=
     | _ => return .continue
 
 /--
+Return the declaration `ConstantInfo` for the code generator.
+
+Remark: the unsafe recursive version is tried first.
+-/
+def getDeclInfo? (declName : Name) : CoreM (Option ConstantInfo) := do
+  let env ← getEnv
+  return env.find? (mkUnsafeRecName declName) <|> env.find? declName
+
+/--
 Convert the given declaration from the Lean environment into `Decl`.
 The steps for this are roughly:
 - partially erasing type information of the declaration
@@ -83,21 +93,32 @@ The steps for this are roughly:
 - turn the resulting term into LCNF declaration
 -/
 def toDecl (declName : Name) : CompilerM Decl := do
-  let env ← getEnv
-  let some info := env.find? (mkUnsafeRecName declName) <|> env.find? declName | throwError "declaration `{declName}` not found"
+  let declName := if let some name := isUnsafeRecName? declName then name else declName
+  let some info ← getDeclInfo? declName | throwError "declaration `{declName}` not found"
   let some value := info.value? | throwError "declaration `{declName}` does not have a value"
   let (type, value) ← Meta.MetaM.run' do
     let type  ← toLCNFType info.type
     let value ← Meta.lambdaTelescope value fun xs body => do Meta.mkLambdaFVars xs (← Meta.etaExpand body)
     let value ← replaceUnsafeRecNames value
     let value ← macroInline value
+    /- Recall that some declarations tagged with `macroInline` contain matchers. -/
     let value ← inlineMatchers value
+    /- Recall that `inlineMatchers` may have exposed `ite`s and `dite`s which are tagged as `[macroInline]`. -/
+    let value ← macroInline value
+    /-
+    Remark: we have disabled the following transformation, we will perform it at phase 2, after code specialization.
+    It prevents many optimizations (e.g., "cases-of-ctor").
+    -/
+    -- let value ← applyCasesOnImplementedBy value
     return (type, value)
   let value ← toLCNF value
-  if let .fun decl (.return _) := value then
-    eraseFVar decl.fvarId (recursive := false)
-    return { name := declName, params := decl.params, type, value := decl.value, levelParams := info.levelParams }
+  let safe := !info.isPartial && !info.isUnsafe
+  let decl ← if let .fun decl (.return _) := value then
+    eraseFunDecl decl (recursive := false)
+    pure { name := declName, params := decl.params, type, value := decl.value, levelParams := info.levelParams, safe : Decl }
   else
-    return { name := declName, params := #[], type, value, levelParams := info.levelParams }
+    pure { name := declName, params := #[], type, value, levelParams := info.levelParams, safe }
+  /- `toLCNF` may eta-reduce simple declarations. -/
+  decl.etaExpand
 
 end Lean.Compiler.LCNF

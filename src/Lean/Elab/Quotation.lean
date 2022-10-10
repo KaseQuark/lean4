@@ -10,7 +10,7 @@ import Lean.ResolveName
 import Lean.Elab.Term
 import Lean.Elab.Quotation.Util
 import Lean.Elab.Quotation.Precheck
-import Lean.Parser.Term
+import Lean.Parser.Syntax
 
 namespace Lean.Elab.Term.Quotation
 open Lean.Parser.Term
@@ -133,7 +133,7 @@ private partial def quoteSyntax : Syntax → TermElabM Term
       `(@TSyntax.raw $(quote <| ks.map (·.1)) $(getAntiquotTerm (getCanonicalAntiquot stx)))
     else if isTokenAntiquot stx && !isEscapedAntiquot stx then
       match stx[0] with
-      | Syntax.atom _ val => `(Syntax.atom (SourceInfo.fromRef $(getAntiquotTerm stx)) $(quote val))
+      | Syntax.atom _ val => `(Syntax.atom (SourceInfo.fromRef $(getAntiquotTerm stx) (canonical := true)) $(quote val))
       | _                 => throwErrorAt stx "expected token"
     else if isAntiquotSuffixSplice stx && !isEscapedAntiquot (getCanonicalAntiquot (getAntiquotSuffixSpliceInner stx)) then
       -- splices must occur in a `many` node
@@ -190,12 +190,11 @@ private partial def quoteSyntax : Syntax → TermElabM Term
 
 def addNamedQuotInfo (stx : Syntax) (k : SyntaxNodeKind) : TermElabM SyntaxNodeKind := do
   if stx.getNumArgs == 3 && stx[0].isAtom then
-    let s := stx[0].getAtomVal!
+    let s := stx[0].getAtomVal
     if s.length > 3 then
       if let (some l, some r) := (stx[0].getPos? true, stx[0].getTailPos? true) then
         -- HACK: The atom is the string "`(foo|", so chop off the edges.
-        -- HACK: We have to use .original here or the hover won't show up
-        let name := stx[0].setInfo <| .original default ⟨l.1 + 2⟩ default ⟨r.1 - 1⟩
+        let name := stx[0].setInfo <| .synthetic ⟨l.1 + 2⟩ ⟨r.1 - 1⟩ (canonical := true)
         tryAddSyntaxNodeKindInfo name k
   pure k
 
@@ -276,35 +275,35 @@ private abbrev Alt := List Term × Term
   alternative. This datatype describes what kind of check this involves, which helps other patterns decide if
   they are covered by the same check and don't have to be checked again (see also `MatchResult`). -/
 inductive HeadCheck where
-  | /-- match step that always succeeds: _, x, `($x), ... -/
-    unconditional
-  | /-- match step based on kind and, optionally, arity of discriminant
-    If `arity` is given, that number of new discriminants is introduced. `covered` patterns should then introduce the
-    same number of new patterns.
-    We actually check the arity at run time only in the case of `null` nodes since it should otherwise by implied by
-    the node kind.
-    without arity: `($x:k)
-    with arity: any quotation without an antiquotation head pattern -/
-    shape (k : List SyntaxNodeKind) (arity : Option Nat)
-  | /-- Match step that succeeds on `null` nodes of arity at least `numPrefix + numSuffix`, introducing discriminants
-    for the first `numPrefix` children, one `null` node for those in between, and for the `numSuffix` last children.
-    example: `([$x, $xs,*, $y]) is `slice 2 2` -/
-    slice (numPrefix numSuffix : Nat)
-  | /-- other, complicated match step that will probably only cover identical patterns
-    example: antiquotation splices `($[...]*) -/
-    other (pat : Syntax)
+  /-- match step that always succeeds: _, x, `($x), ... -/
+  | unconditional
+  /-- match step based on kind and, optionally, arity of discriminant
+  If `arity` is given, that number of new discriminants is introduced. `covered` patterns should then introduce the
+  same number of new patterns.
+  We actually check the arity at run time only in the case of `null` nodes since it should otherwise by implied by
+  the node kind.
+  without arity: `($x:k)
+  with arity: any quotation without an antiquotation head pattern -/
+  | shape (k : List SyntaxNodeKind) (arity : Option Nat)
+  /-- Match step that succeeds on `null` nodes of arity at least `numPrefix + numSuffix`, introducing discriminants
+  for the first `numPrefix` children, one `null` node for those in between, and for the `numSuffix` last children.
+  example: `([$x, $xs,*, $y]) is `slice 2 2` -/
+  | slice (numPrefix numSuffix : Nat)
+  /-- other, complicated match step that will probably only cover identical patterns
+  example: antiquotation splices `($[...]*) -/
+  | other (pat : Syntax)
 
 open HeadCheck
 
 /-- Describe whether a pattern is covered by a head check (induced by the pattern itself or a different pattern). -/
 inductive MatchResult where
-  | /-- Pattern agrees with head check, remove and transform remaining alternative.
-    If `exhaustive` is `false`, *also* include unchanged alternative in the "no" branch. -/
-    covered (f : Alt → TermElabM Alt) (exhaustive : Bool)
-  | /-- Pattern disagrees with head check, include in "no" branch only -/
-    uncovered
-  | /-- Pattern is not quite sure yet; include unchanged in both branches -/
-    undecided
+  /-- Pattern agrees with head check, remove and transform remaining alternative.
+  If `exhaustive` is `false`, *also* include unchanged alternative in the "no" branch. -/
+  | covered (f : Alt → TermElabM Alt) (exhaustive : Bool)
+  /-- Pattern disagrees with head check, include in "no" branch only -/
+  | uncovered
+  /-- Pattern is not quite sure yet; include unchanged in both branches -/
+  | undecided
 
 open MatchResult
 
@@ -580,7 +579,7 @@ private partial def compileStxMatch (discrs : List Term) (alts : List Alt) : Ter
     `(let discr := $discr; $stx)
   | _, _ => unreachable!
 
-abbrev IdxSet := Std.HashSet Nat
+abbrev IdxSet := HashSet Nat
 
 /--
 Given `rhss` the right-hand-sides of a `match`-syntax notation,

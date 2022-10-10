@@ -65,7 +65,6 @@ non-standard extensions in case they're needed, for example to communicate tacti
 namespace Lean.Server.Watchdog
 
 open IO
-open Std (RBMap RBMap.empty)
 open Lsp
 open JsonRpc
 open System.Uri
@@ -84,21 +83,21 @@ section Utils
 
   /-- Events that worker-specific tasks signal to the main thread. -/
   inductive WorkerEvent where
-    | /-- A synthetic event signalling that the grouped edits should be processed. -/
-      processGroupedEdits
+    /-- A synthetic event signalling that the grouped edits should be processed. -/
+    | processGroupedEdits
     | terminated
     | crashed (e : IO.Error)
     | ioError (e : IO.Error)
 
   inductive WorkerState where
-    | /-- The watchdog can detect a crashed file worker in two places: When trying to send a message to the file worker
-      and when reading a request reply.
-      In the latter case, the forwarding task terminates and delegates a `crashed` event to the main task.
-      Then, in both cases, the file worker has its state set to `crashed` and requests that are in-flight are errored.
-      Upon receiving the next packet for that file worker, the file worker is restarted and the packet is forwarded
-      to it. If the crash was detected while writing a packet, we queue that packet until the next packet for the file
-      worker arrives. -/
-      crashed (queuedMsgs : Array JsonRpc.Message)
+    /-- The watchdog can detect a crashed file worker in two places: When trying to send a message to the file worker
+    and when reading a request reply.
+    In the latter case, the forwarding task terminates and delegates a `crashed` event to the main task.
+    Then, in both cases, the file worker has its state set to `crashed` and requests that are in-flight are errored.
+    Upon receiving the next packet for that file worker, the file worker is restarted and the packet is forwarded
+    to it. If the crash was detected while writing a packet, we queue that packet until the next packet for the file
+    worker arrives. -/
+    | crashed (queuedMsgs : Array JsonRpc.Message)
     | running
 
   abbrev PendingRequestMap := RBMap RequestID JsonRpc.Message compare
@@ -254,8 +253,11 @@ section ServerM
         if exitCode = 0 then
           -- Worker was terminated
           fw.errorPendingRequests o ErrorCode.contentModified
-            ("The file worker has been terminated. Either the header has changed,"
+            (s!"The file worker for {fw.doc.meta.uri} has been terminated. Either the header has changed,"
             ++ " or the file was closed, or the server is shutting down.")
+          -- one last message to clear the diagnostics for this file so that stale errors
+          -- do not remain in the editor forever.
+          publishDiagnostics fw.doc.meta #[] o
           return WorkerEvent.terminated
         else
           -- Worker crashed
@@ -593,7 +595,7 @@ section MainLoop
         if let some ge ← fw.groupedEditsRef.get then
           workerTasks := workerTasks.push <| ge.signalTask.map (ServerEvent.workerEvent fw)
 
-    let ev ← IO.waitAny (workerTasks.push clientTask |>.toList)
+    let ev ← IO.waitAny (clientTask :: workerTasks.toList)
     match ev with
     | ServerEvent.clientMsg msg =>
       match msg with

@@ -3,9 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
-import Lean.Attributes
 import Lean.Compiler.InitAttr
-import Lean.ToExpr
 import Lean.ScopedEnvExtension
 import Lean.Compiler.IR.CompilerM
 
@@ -57,8 +55,8 @@ abbrev Table (γ : Type) := SMap Key (List (AttributeEntry γ))
 structure ExtensionState (γ : Type) where
   newEntries : List OLeanEntry := []
   table      : Table γ := {}
-  declNames  : Std.PHashSet Name := {}
-  erased     : Std.PHashSet Name := {}
+  declNames  : PHashSet Name := {}
+  erased     : PHashSet Name := {}
   deriving Inhabited
 
 abbrev Extension (γ : Type) := ScopedEnvExtension OLeanEntry (AttributeEntry γ) (ExtensionState γ)
@@ -102,10 +100,10 @@ def ExtensionState.erase (s : ExtensionState γ) (attrName : Name) (declName : N
     throwError "'{declName}' does not have [{attrName}] attribute"
   return { s with erased := s.erased.insert declName, declNames := s.declNames.erase declName }
 
-protected unsafe def init {γ} (df : Def γ) (attrDeclName : Name) : IO (KeyedDeclsAttribute γ) := do
+protected unsafe def init {γ} (df : Def γ) (attrDeclName : Name := by exact decl_name%) : IO (KeyedDeclsAttribute γ) := do
   let tableRef ← IO.mkRef ({} : Table γ)
   let ext : Extension γ ← registerScopedEnvExtension {
-    name         := df.name
+    name         := attrDeclName
     mkInitial    := return mkStateOfTable (← tableRef.get)
     ofOLeanEntry := fun _ entry => do
       let ctx ← read

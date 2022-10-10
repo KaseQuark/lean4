@@ -3,18 +3,7 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
-import Lean.Util.CollectMVars
-import Lean.Parser.Command
-import Lean.Meta.PPGoal
-import Lean.Meta.Tactic.Assumption
-import Lean.Meta.Tactic.Contradiction
-import Lean.Meta.Tactic.Intro
-import Lean.Meta.Tactic.Clear
-import Lean.Meta.Tactic.Revert
-import Lean.Meta.Tactic.Subst
-import Lean.Elab.Util
 import Lean.Elab.Term
-import Lean.Elab.Binders
 
 namespace Lean.Elab
 open Meta
@@ -108,7 +97,7 @@ protected def getCurrMacroScope : TacticM MacroScope := do pure (← readThe Cor
 protected def getMainModule     : TacticM Name       := do pure (← getEnv).mainModule
 
 unsafe def mkTacticAttribute : IO (KeyedDeclsAttribute Tactic) :=
-  mkElabAttribute Tactic `Lean.Elab.Tactic.tacticElabAttribute `builtinTactic `tactic `Lean.Parser.Tactic `Lean.Elab.Tactic.Tactic "tactic"
+  mkElabAttribute Tactic `builtinTactic `tactic `Lean.Parser.Tactic `Lean.Elab.Tactic.Tactic "tactic" `Lean.Elab.Tactic.tacticElabAttribute
 
 @[builtinInit mkTacticAttribute] opaque tacticElabAttribute : KeyedDeclsAttribute Tactic
 
@@ -161,7 +150,7 @@ partial def evalTactic (stx : Syntax) : TacticM Unit :=
     | .missing => pure ()
     | _ => throwError m!"unexpected tactic{indentD stx}"
 where
-   throwExs (failures : Array EvalTacticFailure) : TacticM Unit := do
+    throwExs (failures : Array EvalTacticFailure) : TacticM Unit := do
      if let some fail := failures[0]? then
        -- Recall that `failures[0]` is the highest priority evalFn/macro
        fail.state.restore (restoreInfo := true)
@@ -294,7 +283,7 @@ def adaptExpander (exp : Syntax → TacticM Syntax) : Tactic := fun stx => do
 def appendGoals (mvarIds : List MVarId) : TacticM Unit :=
   modify fun s => { s with goals := s.goals ++ mvarIds }
 
-/-- Discard the first goal and replace it by the given list of goals, 
+/-- Discard the first goal and replace it by the given list of goals,
 keeping the other goals. -/
 def replaceMainGoal (mvarIds : List MVarId) : TacticM Unit := do
   let (_ :: mvarIds') ← getGoals | throwNoGoalsToBeSolved

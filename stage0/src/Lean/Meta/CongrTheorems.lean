@@ -8,28 +8,28 @@ import Lean.Meta.AppBuilder
 namespace Lean.Meta
 
 inductive CongrArgKind where
-  | /-- It is a parameter for the congruence theorem, the parameter occurs in the left and right hand sides. -/
-    fixed
-  | /--
-      It is not a parameter for the congruence theorem, the theorem was specialized for this parameter.
-      This only happens if the parameter is a subsingleton/proposition, and other parameters depend on it. -/
-    fixedNoParam
-  | /--
-      The lemma contains three parameters for this kind of argument `a_i`, `b_i` and `eq_i : a_i = b_i`.
-      `a_i` and `b_i` represent the left and right hand sides, and `eq_i` is a proof for their equality. -/
-    eq
-  | /--
-      The congr-simp theorems contains only one parameter for this kind of argument, and congr theorems contains two.
-      They correspond to arguments that are subsingletons/propositions. -/
-    cast
-  | /--
-     The lemma contains three parameters for this kind of argument `a_i`, `b_i` and `eq_i : HEq a_i b_i`.
-     `a_i` and `b_i` represent the left and right hand sides, and `eq_i` is a proof for their heterogeneous equality. -/
-    heq
-  | /--
-     For congr-simp theorems only.  Indicates a decidable instance argument.
-     The lemma contains two arguments [a_i : Decidable ...] [b_i : Decidable ...] -/
-    subsingletonInst
+  /-- It is a parameter for the congruence theorem, the parameter occurs in the left and right hand sides. -/
+  | fixed
+  /--
+  It is not a parameter for the congruence theorem, the theorem was specialized for this parameter.
+  This only happens if the parameter is a subsingleton/proposition, and other parameters depend on it. -/
+  | fixedNoParam
+  /--
+  The lemma contains three parameters for this kind of argument `a_i`, `b_i` and `eq_i : a_i = b_i`.
+  `a_i` and `b_i` represent the left and right hand sides, and `eq_i` is a proof for their equality. -/
+  | eq
+  /--
+  The congr-simp theorems contains only one parameter for this kind of argument, and congr theorems contains two.
+  They correspond to arguments that are subsingletons/propositions. -/
+  | cast
+  /--
+  The lemma contains three parameters for this kind of argument `a_i`, `b_i` and `eq_i : HEq a_i b_i`.
+  `a_i` and `b_i` represent the left and right hand sides, and `eq_i` is a proof for their heterogeneous equality. -/
+  | heq
+  /--
+  For congr-simp theorems only.  Indicates a decidable instance argument.
+  The lemma contains two arguments [a_i : Decidable ...] [b_i : Decidable ...] -/
+  | subsingletonInst
   deriving Inhabited
 
 structure CongrTheorem where
@@ -234,7 +234,7 @@ where
             | .eq =>
               let localDecl ← lhss[i]!.fvarId!.getDecl
               withLocalDecl localDecl.userName localDecl.binderInfo localDecl.type fun rhs => do
-              withLocalDeclD ((`e).appendIndexAfter (eqs.size+1)) (← mkEq lhss[i]! rhs) fun eq => do
+              withLocalDeclD (localDecl.userName.appendBefore "e_") (← mkEq lhss[i]! rhs) fun eq => do
                 go (i+1) (rhss.push rhs) (eqs.push eq) (hyps.push rhs |>.push eq)
             | .fixed => go (i+1) (rhss.push lhss[i]!) (eqs.push none) hyps
             | .cast =>
@@ -282,7 +282,7 @@ where
 /--
 Create a congruence theorem for `f`. The theorem is used in the simplifier.
 
-If `subsinglentonInstImplicitRhs = true`, the the `rhs` corresponding to `[Decidable p]` parameters
+If `subsingletonInstImplicitRhs = true`, the the `rhs` corresponding to `[Decidable p]` parameters
 is marked as instance implicit. It forces the simplifier to compute the new instance when applying
 the congruence theorem.
 For the `congr` tactic we set it to `false`.

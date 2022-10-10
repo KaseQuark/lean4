@@ -3,27 +3,48 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-import Lean.Compiler.BorrowedAnnotation
 import Lean.Meta.InferType
 
-namespace Lean.Compiler.LCNF
+namespace Lean.Compiler
 
-structure LCNFTypeExtState where
-  types : Std.PHashMap Name Expr := {}
-  instLevelType : Core.InstantiateLevelCache := {}
-  deriving Inhabited
+scoped notation:max "◾" => lcErased
 
-builtin_initialize lcnfTypeExt : EnvExtension LCNFTypeExtState ←
-  registerEnvExtension (pure {})
+namespace LCNF
 
 def erasedExpr := mkConst ``lcErased
-def anyTypeExpr := mkConst  ``lcAny
 
-def _root_.Lean.Expr.isAnyType (e : Expr) :=
-  e.isConstOf ``lcAny
+def _root_.Lean.Expr.isErased (e : Expr) :=
+  e.isAppOf ``lcErased
 
-def _root_.Lean.Expr.erased (e : Expr) :=
-  e.isConstOf ``lcErased
+def isPropFormerTypeQuick : Expr → Bool
+  | .forallE _ _ b _ => isPropFormerTypeQuick b
+  | .sort .zero => true
+  | _ => false
+
+/--
+Return true iff `type` is `Prop` or `As → Prop`.
+-/
+partial def isPropFormerType (type : Expr) : MetaM Bool := do
+  match isPropFormerTypeQuick type with
+  | true => return true
+  | false => go type #[]
+where
+  go (type : Expr) (xs : Array Expr) : MetaM Bool := do
+    match type with
+    | .sort .zero => return true
+    | .forallE n d b c => Meta.withLocalDecl n c (d.instantiateRev xs) fun x => go b (xs.push x)
+    | _ =>
+      let type ← Meta.whnfD (type.instantiateRev xs)
+      match type with
+      | .sort .zero => return true
+      | .forallE .. => go type #[]
+      | _ => return false
+
+/--
+Return true iff `e : Prop` or `e : As → Prop`.
+-/
+def isPropFormer (e : Expr) : MetaM Bool := do
+  isPropFormerType (← Meta.inferType e)
 
 /-!
 The code generator uses a format based on A-normal form.
@@ -58,10 +79,11 @@ Thus, in the first code generator pass, we convert types into a `LCNFType` (Lean
 The method `toLCNFType` produces a type with the following properties:
 
 - All constants occurring in the result type are inductive datatypes.
-- The arguments of type formers are type formers, `◾`, or `⊤`. We use `◾` to denote erased information,
-  and `⊤` the any type.
-- All type definitions are expanded. If reduction gets stuck, it is replaced with `⊤`.
+- The arguments of type formers are type formers, or `◾`. We use `◾` to denote erased information.
+- All type definitions are expanded. If reduction gets stuck, it is replaced with `◾`.
 
+Remark: you can view `◾` occurring in a type position as the "any type".
+Remark: in our runtime, `◾` is represented as `box(0)`.
 
 The goal is to preserve as much information as possible and avoid the problems described above.
 Then, we don't have `let x := v; ...` in LCNF code when `x` is a type former.
@@ -76,22 +98,14 @@ the result produced by each code generator step.
 
 Below, we provide some example programs and their erased variants:
 -- 1. Source type: `f: (n: Nat) -> (tupleN Nat n)`.
-      LCNF type: `f: Nat -> Any`.
-      We convert the return type `(tupleN Nat n) to `Any`, since we cannot reduce
+      LCNF type: `f: Nat -> ◾`.
+      We convert the return type `(tupleN Nat n) to `◾`, since we cannot reduce
       `(tupleN Nat n)` to a term of the form `(InductiveTy ...)`.
 
 -- 2. Source type: `f: (n: Nat) (fin: Fin n) -> (tupleN Nat fin)`.
-      LCNF type: `f: Nat -> Fin Erased -> Any`.
+      LCNF type: `f: Nat -> Fin ◾ -> ◾`.
       Since `(Fin n)` has dependency on `n`, we erase the `n` to get the
-      type `(Fin Erased)`. See that Erased only
-      occurs at argument position to a type constructor.
-
-- NOTE: we cannot have separate notions of ErasedProof
-        (which occurs at the value level for erased proofs) and ErasedData
-        (which occurs at the type level for erased dependencies)
-        because of universe polymorphism. Thus, we have a single notion of
-        Erased which unifies the two concepts.
-
+      type `(Fin ◾)`.
 -/
 
 open Meta in
@@ -101,7 +115,7 @@ Convert a Lean type into a LCNF type used by the code generator.
 partial def toLCNFType (type : Expr) : MetaM Expr := do
   if (← isProp type) then
     return erasedExpr
-  let type ← whnf type
+  let type ← whnfEta type
   match type with
   | .sort u     => return .sort u
   | .const ..   => visitApp type #[]
@@ -109,24 +123,29 @@ partial def toLCNFType (type : Expr) : MetaM Expr := do
     withLocalDecl n bi d fun x => do
       let d ← toLCNFType d
       let b ← toLCNFType (b.instantiate1 x)
-      if b.isAnyType || b.erased then
+      if b.isErased then
         return b
       else
-        return (Expr.lam n d (b.abstract #[x]) bi).eta
+        return Expr.lam n d (b.abstract #[x]) bi
   | .forallE .. => visitForall type #[]
   | .app ..  => type.withApp visitApp
   | .fvar .. => visitApp type #[]
-  | _        => return anyTypeExpr
+  | _        => return erasedExpr
 where
+  whnfEta (type : Expr) : MetaM Expr := do
+    let type ← whnf type
+    let type' := type.eta
+    if type' != type then
+      whnfEta type'
+    else
+      return type
+
   visitForall (e : Expr) (xs : Array Expr) : MetaM Expr := do
     match e with
     | .forallE n d b bi =>
       let d := d.instantiateRev xs
       withLocalDecl n bi d fun x => do
-        let borrowed := isMarkedBorrowed d
-        let mut d := (← toLCNFType d).abstract xs
-        if borrowed then
-          d := markBorrowed d
+        let d := (← toLCNFType d).abstract xs
         return .forallE n d (← visitForall b (xs.push x)) bi
     | _ =>
       let e ← toLCNFType (e.instantiateRev xs)
@@ -135,13 +154,15 @@ where
   visitApp (f : Expr) (args : Array Expr) := do
     let fNew ← match f with
       | .const declName us =>
-        let .inductInfo _ ← getConstInfo declName | return anyTypeExpr
+        let .inductInfo _ ← getConstInfo declName | return erasedExpr
         pure <| .const declName us
       | .fvar .. => pure f
-      | _ => return anyTypeExpr
+      | _ => return erasedExpr
     let mut result := fNew
     for arg in args do
       if (← isProp arg) then
+        result := mkApp result erasedExpr
+      else if (← isPropFormer arg) then
         result := mkApp result erasedExpr
       else if (← isTypeFormer arg) then
         result := mkApp result (← toLCNFType arg)
@@ -149,89 +170,16 @@ where
         result := mkApp result erasedExpr
     return result
 
-/--
-Return the LCNF type for the given declaration.
--/
-def getDeclLCNFType (declName : Name) : CoreM Expr := do
-  match lcnfTypeExt.getState (← getEnv) |>.types.find? declName with
-  | some type => return type
-  | none =>
-    let info ← getConstInfo declName
-    let type ← Meta.MetaM.run' <| toLCNFType info.type
-    modifyEnv fun env => lcnfTypeExt.modifyState env fun s => { s with types := s.types.insert declName type }
-    return type
-
-/--
-Instantiate the LCNF type for the given declaration with the given universe levels.
--/
-def instantiateLCNFTypeLevelParams (declName : Name) (us : List Level) : CoreM Expr := do
-  if us.isEmpty then
-    getDeclLCNFType declName
-  else
-    if let some (us', r) := lcnfTypeExt.getState (← getEnv) |>.instLevelType.find? declName then
-      if us == us' then
-        return r
-    let type ← getDeclLCNFType declName
-    let info ← getConstInfo declName
-    let r := type.instantiateLevelParams info.levelParams us
-    modifyEnv fun env => lcnfTypeExt.modifyState env fun s => { s with instLevelType := s.instLevelType.insert declName (us, r) }
-    return r
-
-/--
-Return true if the LCNF types `a` and `b` are compatible.
-
-Remark: `a` and `b` can be type formers (e.g., `List`, or `fun (α : Type) => Nat → Nat × α`)
-
-Remark: LCNFs types are eagerly eta reduced.
-
-The below checks do not appear exhaustive, but are
-in fact exhaustive due to LCNF constraints:
-  - bvar: handled by ==.
-  - fvar: handled by ==.
-  - mvar: should be resolved by the time we get to LCNF.
-  - sort: matched.
-  - const: matched.
-  - app: handled by β reduction + match.
-  - lam: matched.
-  - forallE: matched.
-  - letE: LCNF does not contain let at the type level.
-  - lit: We don't have data in LCNF, so we don't need to handle it.
-         Erased is handled by `const`.
-  - mdata: matched.
-  - proj: Becomes Any/Erased depending on what it should become.
-          type inside structure becomes Any, value inside structure becomes Erased.
--/
-partial def compatibleTypes (a b : Expr) : Bool :=
-  if a.isAnyType || b.isAnyType then
-    true
-  else
-    let a := a.headBeta
-    let b := b.headBeta
-    if a == b then
-      true
-    else
-      match a, b with
-      | .mdata _ a, b => compatibleTypes a b
-      | a, .mdata _ b => compatibleTypes a b
-      -- Note that even after reducing to headβ, we can still have `.app` terms. For example,
-      -- an inductive constructor application such as `List Int`
-      | .app f a, .app g b => compatibleTypes f g && compatibleTypes a b
-      | .forallE _ d₁ b₁ _, .forallE _ d₂ b₂ _ => compatibleTypes d₁ d₂ && compatibleTypes b₁ b₂
-      | .lam _ d₁ b₁ _, .lam _ d₂ b₂ _ => compatibleTypes d₁ d₂ && compatibleTypes b₁ b₂
-      | .sort u, .sort v => Level.isEquiv u v
-      | .const n us, .const m vs => n == m && List.isEqv us vs Level.isEquiv
-      | _, _ => false
-
 mutual
 
 partial def joinTypes (a b : Expr) : Expr :=
-  joinTypes? a b |>.getD anyTypeExpr
+  joinTypes? a b |>.getD erasedExpr
 
 partial def joinTypes? (a b : Expr) : Option Expr := do
-  if a.isAnyType then return a
-  else if b.isAnyType then return b
-  else if a == b then return a
-  else if a.erased || b.erased then failure
+  if a.isErased || b.isErased then
+    return erasedExpr -- See comment at `compatibleTypes`.
+  else if a == b then
+    return a
   else
     let a' := a.headBeta
     let b' := b.headBeta
@@ -244,16 +192,16 @@ partial def joinTypes? (a b : Expr) : Option Expr := do
       | .app f a, .app g b =>
         (do return .app (← joinTypes? f g) (← joinTypes? a b))
          <|>
-        return anyTypeExpr
+        return erasedExpr
       | .forallE n d₁ b₁ _, .forallE _ d₂ b₂ _ =>
         (do return .forallE n (← joinTypes? d₁ d₂) (joinTypes b₁ b₂) .default)
         <|>
-        return anyTypeExpr
+        return erasedExpr
       | .lam n d₁ b₁ _, .lam _ d₂ b₂ _ =>
         (do return .lam n (← joinTypes? d₁ d₂) (joinTypes b₁ b₂) .default)
         <|>
-        return anyTypeExpr
-      | _, _ => return anyTypeExpr
+        return erasedExpr
+      | _, _ => return erasedExpr
 
 end
 
@@ -263,11 +211,52 @@ Return `true` if `type` is a LCNF type former type.
 Remark: This is faster than `Lean.Meta.isTypeFormer`, as this
         assumes that the input `type` is an LCNF type.
 -/
-def isTypeFormerType (type : Expr) : Bool :=
-  match type with
+partial def isTypeFormerType (type : Expr) : Bool :=
+  match type.headBeta with
   | .sort .. => true
   | .forallE _ _ b _ => isTypeFormerType b
-  | _ => type.isAnyType
+  | _ => false
+
+/--
+Given a LCNF `type` of the form `forall (a_1 : A_1) ... (a_n : A_n), B[a_1, ..., a_n]` and `p_1 : A_1, ... p_n : A_n`,
+return `B[p_1, ..., p_n]`.
+
+Remark: similar to `Meta.instantiateForall`, buf for LCNF types.
+-/
+def instantiateForall (type : Expr) (ps : Array Expr) : CoreM Expr :=
+  go 0 type
+where
+  go (i : Nat) (type : Expr) : CoreM Expr :=
+    if h : i < ps.size then
+      if let .forallE _ _ b _ := type.headBeta then
+        go (i+1) (b.instantiate1 ps[i])
+      else
+        throwError "invalid instantiateForall, too many parameters"
+    else
+      return type
+termination_by go i _ => ps.size - i
+
+/--
+Return `true` if `type` is a predicate.
+Examples: `Nat → Prop`, `Prop`, `Int → Bool → Prop`.
+-/
+partial def isPredicateType (type : Expr) : Bool :=
+  match type.headBeta with
+  | .sort .zero => true
+  | .forallE _ _ b _ => isPredicateType b
+  | _ => false
+
+/--
+Return `true` if `type` is a LCNF type former type or it is an "any" type.
+This function is similar to `isTypeFormerType`, but more liberal.
+For example, `isTypeFormerType` returns false for `◾` and `Nat → ◾`, but
+this function returns true.
+-/
+partial def maybeTypeFormerType (type : Expr) : Bool :=
+  match type.headBeta with
+  | .sort .. => true
+  | .forallE _ _ b _ => maybeTypeFormerType b
+  | _ => type.isErased
 
 /--
 `isClass? type` return `some ClsName` if the LCNF `type` is an instance of the class `ClsName`.
@@ -279,8 +268,17 @@ def isClass? (type : Expr) : CoreM (Option Name) := do
   else
     return none
 
-def getArrowArity (e : Expr) :=
-  match e with
+/--
+`isArrowClass? type` return `some ClsName` if the LCNF `type` is an instance of the class `ClsName`, or
+if it is arrow producing an instance of the class `ClsName`.
+-/
+partial def isArrowClass? (type : Expr) : CoreM (Option Name) := do
+  match type.headBeta with
+  | .forallE _ _ b _ => isArrowClass? b
+  | _ => isClass? type
+
+partial def getArrowArity (e : Expr) :=
+  match e.headBeta with
   | .forallE _ _ b _ => getArrowArity b + 1
   | _ => 0
 

@@ -1,16 +1,64 @@
+import Lean
 set_option pp.analyze false
 
 def p (x y : Nat) := x = y
 
 example (x y : Nat) : p (x + y) (y + x + 0) := by
   conv =>
+    trace_state
     whnf
+    tactic' => trace_state
+    trace_state
     congr
-    . rfl
-    . whnf; rfl
+    next => rfl
+    any_goals whnf; rfl
+  conv' =>
+    trace_state
+    apply id ?x
+  conv =>
+    fail_if_success case x => whnf
   trace_state
   rw [Nat.add_comm]
   rfl
+
+def foo (x y : Nat) : Nat := x + y
+
+example : foo (0 + a) (b + 0) = a + b := by
+  conv =>
+    apply id
+    lhs
+    trace_state
+    congr
+    trace_state
+    case x =>
+      simp
+      trace_state
+    fail_if_success case x => skip
+    case' y => skip
+    case y => skip
+    done
+
+example : foo (0 + a) (b + 0) = a + b := by
+  conv =>
+    lhs
+    conv =>
+      congr
+      trace_state
+      focus
+        trace_state
+      tactic => simp
+      trace_state
+      all_goals dsimp (config := {}) []
+    simp [foo]
+    trace_state
+
+example : foo (0 + a) (b + 0) = a + b := by
+  conv =>
+    lhs
+    congr <;> simp
+    fail_if_success lhs
+    try lhs
+    trace_state
 
 example (x y : Nat) : p (x + y) (y + x + 0) := by
   conv =>
@@ -180,3 +228,17 @@ example : let a := 0; let b := a; b = 0 := by
   conv =>
     zeta
     trace_state
+
+example : ((x + y) + z : Nat) = x + (y + z) := by
+  conv in _ + _ => trace_state
+  conv in (occs := *) _ + _ => trace_state
+  conv in (occs := 1 3) _ + _ => trace_state
+  conv in (occs := 3 1) _ + _ => trace_state
+  conv in (occs := 2 3) _ + _ => trace_state
+  conv in (occs := 2 4) _ + _ => trace_state
+  apply Nat.add_assoc
+
+example : ((x + y) + z : Nat) = x + (y + z) := by conv => pattern (occs := 5) _ + _
+example : ((x + y) + z : Nat) = x + (y + z) := by conv => pattern (occs := 2 5) _ + _
+example : ((x + y) + z : Nat) = x + (y + z) := by conv => pattern (occs := 1 5) _ + _
+example : ((x + y) + z : Nat) = x + (y + z) := by conv => pattern (occs := 1 2 5) _ + _

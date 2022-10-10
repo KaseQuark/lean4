@@ -59,38 +59,12 @@ def delabSort : Delab := do
     | none    => `(Sort $(Level.quote l max_prec))
 
 
-def unresolveNameGlobal (n₀ : Name) : DelabM Name := do
-  if n₀.hasMacroScopes then return n₀
-  if (← getPPOption getPPFullNames) then
-    match (← resolveGlobalName n₀) with
-      | [(potentialMatch, _)] => if potentialMatch == n₀ then return n₀ else return rootNamespace ++ n₀
-      | _ => return n₀ -- if can't resolve, return the original
-  let mut initialNames := (getRevAliases (← getEnv) n₀).toArray
-  initialNames := initialNames.push (rootNamespace ++ n₀)
-  for initialName in initialNames do
-    match (← unresolveNameCore initialName) with
-    | none => continue
-    | some n => return n
-  return n₀ -- if can't resolve, return the original
-where
-  unresolveNameCore (n : Name) : DelabM (Option Name) := do
-    let mut revComponents := n.components'
-    let mut candidate := Name.anonymous
-    for _ in [:revComponents.length] do
-      match revComponents with
-      | [] => return none
-      | cmpt::rest => candidate := cmpt ++ candidate; revComponents := rest
-      match (← resolveGlobalName candidate) with
-      | [(potentialMatch, _)] => if potentialMatch == n₀ then return some candidate else continue
-      | _ => continue
-    return none
-
 -- NOTE: not a registered delaborator, as `const` is never called (see [delab] description)
 def delabConst : Delab := do
   let Expr.const c₀ ls ← getExpr | unreachable!
   let c₀ := if (← getPPOption getPPPrivateNames) then c₀ else (privateToUserName? c₀).getD c₀
 
-  let mut c ← unresolveNameGlobal c₀
+  let mut c ← unresolveNameGlobal c₀ (fullNames := ← getPPOption getPPFullNames)
   let stx ← if ls.isEmpty || !(← getPPOption getPPUniverses) then
     if (← getLCtx).usesUserName c then
       -- `c` is also a local declaration
@@ -550,9 +524,29 @@ def delabLam : Delab :=
       | `(fun $binderGroups* => $stxBody) => `(fun $group $binderGroups* => $stxBody)
       | _                                 => `(fun $group => $stxBody)
 
+/--
+Similar to `delabBinders`, but tracking whether `forallE` is dependent or not.
+
+See issue #1571
+-/
+private partial def delabForallBinders (delabGroup : Array Syntax → Bool → Syntax → Delab) (curNames : Array Syntax := #[]) (curDep := false) : Delab := do
+  let dep := !(← getExpr).isArrow
+  if !curNames.isEmpty && dep != curDep then
+    -- don't group
+    delabGroup curNames curDep (← delab)
+  else
+    let curDep := dep
+    if ← shouldGroupWithNext then
+      -- group with nested binder => recurse immediately
+      withBindingBodyUnusedName fun stxN => delabForallBinders delabGroup (curNames.push stxN) curDep
+    else
+      -- don't group => delab body and prepend current binder group
+      let (stx, stxN) ← withBindingBodyUnusedName fun stxN => return (← delab, stxN)
+      delabGroup (curNames.push stxN) curDep stx
+
 @[builtinDelab forallE]
-def delabForall : Delab :=
-  delabBinders fun curNames stxBody => do
+def delabForall : Delab := do
+  delabForallBinders fun curNames dependent stxBody => do
     let e ← getExpr
     let prop ← try isProp e catch _ => pure false
     let stxT ← withBindingDomain delab
@@ -562,9 +556,6 @@ def delabForall : Delab :=
     -- here `curNames.size == 1`
     | BinderInfo.instImplicit   => `(bracketedBinderF|[$curNames.back : $stxT])
     | _                         =>
-      -- heuristic: use non-dependent arrows only if possible for whole group to avoid
-      -- noisy mix like `(α : Type) → Type → (γ : Type) → ...`.
-      let dependent := curNames.any fun n => hasIdent n.getId stxBody
       -- NOTE: non-dependent arrows are available only for the default binder info
       if dependent then
         if prop && !(← getPPOption getPPPiBinderTypes) then

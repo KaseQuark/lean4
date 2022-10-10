@@ -4,10 +4,10 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
 import Lean.CoreM
+import Lean.MonadEnv
 import Lean.Util.Recognizers
 
 namespace Lean.Compiler.LCNF
-
 /--
 Return `true` if `mdata` should be preserved.
 Right now, we don't preserve any `MData`, but this may
@@ -24,6 +24,7 @@ def isLcCast? (e : Expr) : Option Expr :=
     some e.appArg!
   else
     none
+
 /--
 Store information about `casesOn` declarations.
 
@@ -37,6 +38,9 @@ structure CasesInfo where
   altsRange    : Std.Range
   altNumParams : Array Nat
   motivePos    : Nat
+
+def CasesInfo.numAlts (c : CasesInfo) : Nat :=
+  c.altNumParams.size
 
 private def getCasesOnInductiveVal? (declName : Name) : CoreM (Option InductiveVal) := do
   unless isCasesOnRecursor (← getEnv) declName do return none

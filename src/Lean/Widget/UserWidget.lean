@@ -4,11 +4,8 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Authors: E.W.Ayers
 -/
-import Lean.Widget.Basic
-import Lean.Data.Json
-import Lean.Environment
-import Lean.Server
 import Lean.Elab.Eval
+import Lean.Server.Rpc.RequestHandling
 
 open Lean
 
@@ -54,13 +51,12 @@ structure UserWidget where
 
 private abbrev WidgetSourceRegistry := SimplePersistentEnvExtension
     (UInt64 × Name)
-    (Std.RBMap UInt64 Name compare)
+    (RBMap UInt64 Name compare)
 
 -- Mapping widgetSourceId to hash of sourcetext
-builtin_initialize userWidgetRegistry : MapDeclarationExtension UserWidget ← mkMapDeclarationExtension `widgetRegistry
+builtin_initialize userWidgetRegistry : MapDeclarationExtension UserWidget ← mkMapDeclarationExtension
 builtin_initialize widgetSourceRegistry : WidgetSourceRegistry ←
   registerSimplePersistentEnvExtension {
-    name          := `widgetSourceRegistry
     addImportedFn := fun xss => xss.foldl (Array.foldl (fun s n => s.insert n.1 n.2)) ∅
     addEntryFn    := fun s n => s.insert n.1 n.2
     toArrayFn     := fun es => es.toArray

@@ -5,6 +5,7 @@ Authors: Sebastian Ullrich
 -/
 import Lean.CoreM
 import Lean.Parser.Extension
+import Lean.Parser.StrInterpolation
 import Lean.KeyedDeclsAttribute
 import Lean.ParserCompiler.Attribute
 import Lean.PrettyPrinter.Basic
@@ -189,7 +190,7 @@ opaque mkAntiquot.formatter' (name : String) (kind : SyntaxNodeKind) (anonymous 
 opaque interpretParserDescr' : ParserDescr → CoreM Formatter
 
 private def SourceInfo.getExprPos? : SourceInfo → Option String.Pos
-  | SourceInfo.synthetic pos _ => pos
+  | SourceInfo.synthetic (pos := pos) .. => pos
   | _ => none
 
 private def getExprPos? : Syntax → Option String.Pos
@@ -481,6 +482,7 @@ def setExpected.formatter (_expected : List String) (p : Formatter) : Formatter 
   modify fun st => { st with leadWord := "" }
 @[combinatorFormatter Lean.Parser.checkLinebreakBefore] def checkLinebreakBefore.formatter : Formatter := pure ()
 @[combinatorFormatter Lean.Parser.checkTailWs] def checkTailWs.formatter : Formatter := pure ()
+@[combinatorFormatter Lean.Parser.checkColEq] def checkColEq.formatter : Formatter := pure ()
 @[combinatorFormatter Lean.Parser.checkColGe] def checkColGe.formatter : Formatter := pure ()
 @[combinatorFormatter Lean.Parser.checkColGt] def checkColGt.formatter : Formatter := pure ()
 @[combinatorFormatter Lean.Parser.checkLineEq] def checkLineEq.formatter : Formatter := pure ()

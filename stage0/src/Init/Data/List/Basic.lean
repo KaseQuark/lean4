@@ -155,11 +155,6 @@ theorem mapTRAux_eq (f : α → β) (as : List α) (bs : List β) : mapTRAux f a
   funext fun α => funext fun β => funext fun f => funext fun as => by
     simp [mapTR, mapTRAux_eq]
 
-@[specialize] def map₂ (f : α → β → γ) : List α → List β → List γ
-  | [],    _     => []
-  | _,     []    => []
-  | a::as, b::bs => f a b :: map₂ f as bs
-
 def join : List (List α) → List α
   | []      => []
   | a :: as => a ++ join as
@@ -245,9 +240,9 @@ def notElem [BEq α] (a : α) (as : List α) : Bool :=
 abbrev contains [BEq α] (as : List α) (a : α) : Bool :=
   elem a as
 
-inductive Mem : α → List α → Prop
-  | head (a : α) (as : List α) : Mem a (a::as)
-  | tail (a : α) {b : α} {as : List α} : Mem b as → Mem b (a::as)
+inductive Mem (a : α) : List α → Prop
+  | head (as : List α) : Mem a (a::as)
+  | tail (b : α) {as : List α} : Mem a as → Mem a (b::as)
 
 instance : Membership α (List α) where
   mem := Mem
@@ -367,7 +362,7 @@ def or  (bs : List Bool) : Bool := bs.any id
 
 def and (bs : List Bool) : Bool := bs.all id
 
-def zipWith (f : α → β → γ) : List α → List β → List γ
+@[specialize] def zipWith (f : α → β → γ) : List α → List β → List γ
   | x::xs, y::ys => f x y :: zipWith f xs ys
   | _,     _     => []
 
@@ -408,11 +403,6 @@ def enumFrom : Nat → List α → List (Nat × α)
   | n, x :: xs   => (n, x) :: enumFrom (n + 1) xs
 
 def enum : List α → List (Nat × α) := enumFrom 0
-
-def init : List α → List α
-  | []   => []
-  | [_]  => []
-  | a::l => a::init l
 
 def intersperse (sep : α) : List α → List α
   | []    => []
@@ -466,10 +456,21 @@ def isPrefixOf [BEq α] : List α → List α → Bool
   | _,     []    => false
   | a::as, b::bs => a == b && isPrefixOf as bs
 
+/-- `isPrefixOf? l₁ l₂` returns `some t` when `l₂ == l₁ ++ t`. -/
+def isPrefixOf? [BEq α] : List α → List α → Option (List α)
+  | [], l₂ => some l₂
+  | _, [] => none
+  | (x₁ :: l₁), (x₂ :: l₂) =>
+    if x₁ == x₂ then isPrefixOf? l₁ l₂ else none
+
 /--  `isSuffixOf l₁ l₂` returns `true` Iff `l₁` is a suffix of `l₂`.
 That is, there exists a `t` such that `l₂ == t ++ l₁`. -/
 def isSuffixOf [BEq α] (l₁ l₂ : List α) : Bool :=
   isPrefixOf l₁.reverse l₂.reverse
+
+/-- `isSuffixOf? l₁ l₂` returns `some t` when `l₂ == t ++ l₁`.-/
+def isSuffixOf? [BEq α] (l₁ l₂ : List α) : Option (List α) :=
+  Option.map List.reverse <| isPrefixOf? l₁.reverse l₂.reverse
 
 @[specialize] def isEqv : List α → List α → (α → α → Bool) → Bool
   | [],    [],    _   => true

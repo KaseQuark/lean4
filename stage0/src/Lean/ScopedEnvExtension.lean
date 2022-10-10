@@ -20,7 +20,7 @@ structure State (σ : Type) where
   activeScopes : NameSet := {}
 
 structure ScopedEntries (β : Type) where
-  map : SMap Name (Std.PArray β) := {}
+  map : SMap Name (PArray β) := {}
   deriving Inhabited
 
 structure StateStack (α : Type) (β : Type) (σ : Type) where
@@ -30,7 +30,7 @@ structure StateStack (α : Type) (β : Type) (σ : Type) where
   deriving Inhabited
 
 structure Descr (α : Type) (β : Type) (σ : Type) where
-  name           : Name
+  name           : Name := by exact decl_name%
   mkInitial      : IO σ
   ofOLeanEntry   : σ → α → ImportM β
   toOLeanEntry   : β → α
@@ -51,7 +51,7 @@ def mkInitial (descr : Descr α β σ) : IO (StateStack α β σ) :=
 
 def ScopedEntries.insert (scopedEntries : ScopedEntries β) (ns : Name) (b : β) : ScopedEntries β :=
   match scopedEntries.map.find? ns with
-  | none    => { map := scopedEntries.map.insert ns <| ({} : Std.PArray β).push b }
+  | none    => { map := scopedEntries.map.insert ns <| ({} : PArray β).push b }
   | some bs => { map := scopedEntries.map.insert ns <| bs.push b }
 
 def addImportedFn (descr : Descr α β σ) (as : Array (Array (Entry α))) : ImportM (StateStack α β σ) := do
@@ -197,7 +197,7 @@ def activateScoped [Monad m] [MonadEnv m] [MonadLiftT (ST IO.RealWorld) m] (name
 abbrev SimpleScopedEnvExtension (α : Type) (σ : Type) := ScopedEnvExtension α α σ
 
 structure SimpleScopedEnvExtension.Descr (α : Type) (σ : Type) where
-  name           : Name
+  name           : Name := by exact decl_name%
   addEntry       : σ → α → σ
   initial        : σ
   finalizeImport : σ → σ := id

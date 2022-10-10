@@ -19,7 +19,7 @@ inductive StrictOrLazy (α β : Type) : Type
 structure LazyTraceChildren where
   indent : Nat
   children : Array (WithRpcRef MessageData)
-  deriving Std.TypeName
+  deriving TypeName
 
 inductive MsgEmbed where
   | expr : CodeWithInfos → MsgEmbed
@@ -56,14 +56,15 @@ private def mkPPContext (nCtx : NamingContext) (ctx : MessageDataContext) : PPCo
 }
 
 private inductive EmbedFmt
-  | /-- Tags denote `Info` objects. -/
-    expr (ctx : Elab.ContextInfo) (infos : Std.RBMap Nat Elab.Info compare)
+  /-- Tags denote `Info` objects. -/
+  | expr (ctx : Elab.ContextInfo) (infos : RBMap Nat Elab.Info compare)
   | goal (ctx : Elab.ContextInfo) (lctx : LocalContext) (g : MVarId)
-  | /-- Some messages (in particular, traces) are too costly to print eagerly. Instead, we allow
-    the user to expand sub-traces interactively. -/
-    trace (cls : Name) (msg : Format) (collapsed : Bool)
-      (children : StrictOrLazy (Array Format) (Array MessageData))
-  | /-- Ignore any tags in this subtree. -/ ignoreTags
+  /-- Some messages (in particular, traces) are too costly to print eagerly. Instead, we allow
+  the user to expand sub-traces interactively. -/
+  | trace (cls : Name) (msg : Format) (collapsed : Bool)
+    (children : StrictOrLazy (Array Format) (Array MessageData))
+  /-- Ignore any tags in this subtree. -/
+  | ignoreTags
   deriving Inhabited
 
 private abbrev MsgFmtM := StateT (Array EmbedFmt) IO
@@ -184,6 +185,6 @@ def msgToInteractiveDiagnostic (text : FileMap) (m : Message) (hasWidgets : Bool
       msgToInteractive m.data hasWidgets
     catch ex =>
       pure <| TaggedText.text s!"[error when printing message: {ex.toString}]"
-  pure { range, fullRange, severity?, source?, message, tags? }
+  pure { range, fullRange? := some fullRange, severity?, source?, message, tags? }
 
 end Lean.Widget
