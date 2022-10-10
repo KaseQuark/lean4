@@ -158,7 +158,6 @@ private partial def extractIndentation (input : String) : String := match "  ".i
 private structure InsertReturn where
   stx : Syntax
   newPath : List Nat
-  test : String
 
 private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
   let mut t := Syntax.Traverser.fromSyntax stx
@@ -216,10 +215,9 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
 
   let newPath := pathBeforeConvParam ++ (pathAfterConv.head! + 1)::0::0::[0]
 
-  return { stx := t.cur, newPath := newPath , test := ""}
+  return { stx := t.cur, newPath := newPath }
 
 private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
-  let mut test := ""
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -239,7 +237,6 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   let argAsString := reprint! t.cur.getArgs[pathAfterConv.head!]!
   let mut newval := value
   let mut entersMerged := false
-  test := toString t.cur.getArgs[pathAfterConv.head!]!.getKind
   if toString t.cur.getArgs[pathAfterConv.head!]!.getKind == "Lean.Parser.Tactic.Conv.«convEnter[__]»" then
     let mut additionalArgs := (argAsString.splitOn "\n").head!
     additionalArgs := (additionalArgs.drop "enter [".length).dropRight 1
@@ -309,11 +306,11 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   while t.parents.size > 0 do
     t := t.up
 
-  return { stx := t.cur, newPath := newPath, test := test }
+  return { stx := t.cur, newPath := newPath }
 
 
 private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
-  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam , test := ""}
+  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam }
   -- we are right after conv, we need to do something different here
   if pathAfterConvParam.length == 1 then
     return insertAfterArrow stx pathBeforeConvParam pathAfterConvParam value
