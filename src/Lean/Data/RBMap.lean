@@ -3,20 +3,20 @@ Copyright (c) 2017 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-namespace Std
+namespace Lean
 universe u v w w'
 
-inductive Rbcolor where
+inductive RBColor where
   | red | black
 
 inductive RBNode (α : Type u) (β : α → Type v) where
   | leaf                                                                                        : RBNode α β
-  | node  (color : Rbcolor) (lchild : RBNode α β) (key : α) (val : β key) (rchild : RBNode α β) : RBNode α β
+  | node  (color : RBColor) (lchild : RBNode α β) (key : α) (val : β key) (rchild : RBNode α β) : RBNode α β
 
 namespace RBNode
 variable {α : Type u} {β : α → Type v} {σ : Type w}
 
-open Std.Rbcolor Nat
+open RBColor Nat
 
 def depth (f : Nat → Nat → Nat) : RBNode α β → Nat
   | leaf           => 0
@@ -76,17 +76,17 @@ protected def max : RBNode α β → Option (Sigma (fun k => β k))
 def singleton (k : α) (v : β k) : RBNode α β :=
   node red leaf k v leaf
 
-@[inline] def balance1 : (a : α) → β a → RBNode α β → RBNode α β → RBNode α β
-  | kv, vv, t, node _ (node red l kx vx r₁) ky vy r₂   => node red (node black l kx vx r₁) ky vy (node black r₂ kv vv t)
-  | kv, vv, t, node _ l₁ ky vy (node red l₂ kx vx r)   => node red (node black l₁ ky vy l₂) kx vx (node black r kv vv t)
-  | kv, vv, t, node _ l  ky vy r                       => node black (node red l ky vy r) kv vv t
-  | _,  _,  _,                                       _ => leaf -- unreachable
+-- the first half of Okasaki's `balance`, concerning red-red sequences in the left child
+@[inline] def balance1 : RBNode α β → (a : α) → β a → RBNode α β → RBNode α β
+  | node red (node red a kx vx b) ky vy c, kz, vz, d
+  | node red a kx vx (node red b ky vy c), kz, vz, d => node red (node black a kx vx b) ky vy (node black c kz vz d)
+  | a,                                     kx, vx, b => node black a kx vx b
 
+-- the second half, concerning red-red sequences in the right child
 @[inline] def balance2 : RBNode α β → (a : α) → β a → RBNode α β → RBNode α β
-  | t, kv, vv, node _ (node red l kx₁ vx₁ r₁) ky vy r₂  => node red (node black t kv vv l) kx₁ vx₁ (node black r₁ ky vy r₂)
-  | t, kv, vv, node _ l₁ ky vy (node red l₂ kx₂ vx₂ r₂) => node red (node black t kv vv l₁) ky vy (node black l₂ kx₂ vx₂ r₂)
-  | t, kv, vv, node _ l ky vy r                         => node black t kv vv (node red l ky vy r)
-  | _, _,  _,                                        _  => leaf -- unreachable
+  | a, kx, vx, node red (node red b ky vy c) kz vz d
+  | a, kx, vx, node red b ky vy (node red c kz vz d) => node red (node black a kx vx b) ky vy (node black c kz vz d)
+  | a, kx, vx, b                                     => node black a kx vx b
 
 def isRed : RBNode α β → Bool
   | node red .. => true
@@ -109,12 +109,8 @@ variable (cmp : α → α → Ordering)
     | Ordering.eq => node red a kx vx b
   | node black a ky vy b, kx, vx =>
     match cmp kx ky with
-    | Ordering.lt =>
-      if isRed a then balance1 ky vy b (ins a kx vx)
-        else node black (ins a kx vx) ky vy b
-    | Ordering.gt =>
-        if isRed b then balance2 a ky vy (ins b kx vx)
-        else node black a ky vy (ins b kx vx)
+    | Ordering.lt => balance1 (ins a kx vx) ky vy b
+    | Ordering.gt => balance2 a ky vy (ins b kx vx)
     | Ordering.eq => node black a kx vx b
 
 def setBlack : RBNode α β → RBNode α β
@@ -127,35 +123,30 @@ def setBlack : RBNode α β → RBNode α β
 
 end Insert
 
-def balance₃ (a : RBNode α β) (k : α) (v : β k) (d : RBNode α β) : RBNode α β :=
-  match a with
-  | node red (node red a kx vx b) ky vy c => node red (node black a kx vx b) ky vy (node black c k v d)
-  | node red a kx vx (node red b ky vy c) => node red (node black a kx vx b) ky vy (node black c k v d)
-  | a => match d with
-    | node red b ky vy (node red c kz vz d)   => node red (node black a k v b) ky vy (node black c kz vz d)
-    | node red (node red b ky vy c) kz vz d   => node red (node black a k v b) ky vy (node black c kz vz d)
-    | _                                       => node black a k v d
-
 def setRed : RBNode α β → RBNode α β
   | node _ a k v b => node red a k v b
   | e              => e
 
 def balLeft : RBNode α β → (k : α) → β k → RBNode α β → RBNode α β
   | node red a kx vx b,   k, v, r                    => node red (node black a kx vx b) k v r
-  | l, k, v, node black a ky vy b                    => balance₃ l k v (node red a ky vy b)
-  | l, k, v, node red (node black a ky vy b) kz vz c => node red (node black l k v a) ky vy (balance₃ b kz vz (setRed c))
+  | l, k, v, node black a ky vy b                    => balance2 l k v (node red a ky vy b)
+  | l, k, v, node red (node black a ky vy b) kz vz c => node red (node black l k v a) ky vy (balance2 b kz vz (setRed c))
   | l, k, v, r                                       => node red l k v r -- unreachable
 
 def balRight (l : RBNode α β) (k : α) (v : β k) (r : RBNode α β) : RBNode α β :=
   match r with
   | (node red b ky vy c) => node red l k v (node black b ky vy c)
   | _ => match l with
-    | node black a kx vx b                    => balance₃ (node red a kx vx b) k v r
-    | node red a kx vx (node black b ky vy c) => node red (balance₃ (setRed a) kx vx b) ky vy (node black c k v r)
+    | node black a kx vx b                    => balance1 (node red a kx vx b) k v r
+    | node red a kx vx (node black b ky vy c) => node red (balance1 (setRed a) kx vx b) ky vy (node black c k v r)
     | _                                       => node red l k v r -- unreachable
 
--- TODO: use wellfounded recursion
-partial def appendTrees :  RBNode α β → RBNode α β → RBNode α β
+/-- The number of nodes in the tree. -/
+@[local simp] def size : RBNode α β → Nat
+  | leaf => 0
+  | node _ x _ _ y => x.size + y.size + 1
+
+def appendTrees :  RBNode α β → RBNode α β → RBNode α β
   | leaf, x => x
   | x, leaf => x
   | node red a kx vx b,   node red c ky vy d   =>
@@ -168,6 +159,7 @@ partial def appendTrees :  RBNode α β → RBNode α β → RBNode α β
      | bc                   => balLeft a kx vx (node black bc ky vy d)
    | a, node red b kx vx c   => node red (appendTrees a b) kx vx c
    | node red a kx vx b,   c => node red a kx vx (appendTrees b c)
+termination_by _ x y => x.size + y.size
 
 section Erase
 
@@ -249,7 +241,7 @@ instance : EmptyCollection (RBNode α β) := ⟨leaf⟩
 
 end RBNode
 
-open Std.RBNode
+open Lean.RBNode
 
 /- TODO(Leo): define dRBMap -/
 
@@ -313,7 +305,7 @@ instance : ForIn m (RBMap α β cmp) (α × β) where
     | none        => none
 
 instance [Repr α] [Repr β] : Repr (RBMap α β cmp) where
-  reprPrec m prec := Repr.addAppParen ("Std.rbmapOf " ++ repr m.toList) prec
+  reprPrec m prec := Repr.addAppParen ("Lean.rbmapOf " ++ repr m.toList) prec
 
 @[inline] def insert : RBMap α β cmp → α → β → RBMap α β cmp
   | ⟨t, w⟩, k, v => ⟨t.insert cmp k v, WellFormed.insertWff w rfl⟩
@@ -339,11 +331,14 @@ instance [Repr α] [Repr β] : Repr (RBMap α β cmp) where
 @[inline] def lowerBound : RBMap α β cmp → α → Option (Sigma (fun (_ : α) => β))
   | ⟨t, _⟩, x => t.lowerBound cmp x none
 
-/-- Returns true if the given key `a` is in the RBMap.-/
+/-- Returns true if the given key `a` is in the RBMap. -/
 @[inline] def contains (t : RBMap α β cmp) (a : α) : Bool :=
   (t.find? a).isSome
 
 @[inline] def fromList (l : List (α × β)) (cmp : α → α → Ordering) : RBMap α β cmp :=
+  l.foldl (fun r p => r.insert p.1 p.2) (mkRBMap α β cmp)
+
+@[inline] def fromArray (l : Array (α × β)) (cmp : α → α → Ordering) : RBMap α β cmp :=
   l.foldl (fun r p => r.insert p.1 p.2) (mkRBMap α β cmp)
 
 /-- Returns true if the given predicate is true for all items in the RBMap. -/
@@ -371,7 +366,7 @@ def maxDepth (t : RBMap α β cmp) : Nat :=
   | some p => p
   | none   => panic! "map is empty"
 
-/-- Attempts to find the value with key `k : α` in `t` and panics if there is no such key.-/
+/-- Attempts to find the value with key `k : α` in `t` and panics if there is no such key. -/
 @[inline] def find! [Inhabited β] (t : RBMap α β cmp) (k : α) : β :=
   match t.find? k with
   | some b => b
@@ -397,5 +392,3 @@ end RBMap
 
 def rbmapOf {α : Type u} {β : Type v} (l : List (α × β)) (cmp : α → α → Ordering) : RBMap α β cmp :=
   RBMap.fromList l cmp
-
-end Std

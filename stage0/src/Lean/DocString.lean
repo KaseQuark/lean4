@@ -9,17 +9,17 @@ import Lean.MonadEnv
 namespace Lean
 
 private builtin_initialize builtinDocStrings : IO.Ref (NameMap String) ← IO.mkRef {}
-private builtin_initialize docStringExt : MapDeclarationExtension String ← mkMapDeclarationExtension `docstring
+private builtin_initialize docStringExt : MapDeclarationExtension String ← mkMapDeclarationExtension
 
 private def findLeadingSpacesSize (s : String) : Nat :=
   let it := s.iter
   let it := it.find (· == '\n') |>.next
-  let (min, it) := it.foldUntil 0 fun num c => if c == ' ' || c == '\t' then some (num + 1) else none
-  findNextLine it min
+  consumeSpaces it 0 s.length
 where
   consumeSpaces (it : String.Iterator) (curr min : Nat) : Nat :=
     if it.atEnd then min
     else if it.curr == ' ' || it.curr == '\t' then consumeSpaces it.next (curr + 1) min
+    else if it.curr == '\n' then findNextLine it.next min
     else findNextLine it.next (Nat.min curr min)
   findNextLine (it : String.Iterator) (min : Nat) : Nat :=
     if it.atEnd then min
@@ -44,7 +44,7 @@ termination_by
   consumeSpaces n it r => (it, 1)
   saveLine it r => (it, 0)
 
-private def removeLeadingSpaces (s : String) : String :=
+def removeLeadingSpaces (s : String) : String :=
   let n := findLeadingSpacesSize s
   if n == 0 then s else removeNumLeadingSpaces n s
 
@@ -71,8 +71,7 @@ structure ModuleDoc where
   doc : String
   declarationRange : DeclarationRange
 
-private builtin_initialize moduleDocExt : SimplePersistentEnvExtension ModuleDoc (Std.PersistentArray ModuleDoc) ← registerSimplePersistentEnvExtension {
-  name          := `moduleDocExt
+private builtin_initialize moduleDocExt : SimplePersistentEnvExtension ModuleDoc (PersistentArray ModuleDoc) ← registerSimplePersistentEnvExtension {
   addImportedFn := fun _ => {}
   addEntryFn    := fun s e => s.push e
   toArrayFn     := fun es => es.toArray
@@ -81,7 +80,7 @@ private builtin_initialize moduleDocExt : SimplePersistentEnvExtension ModuleDoc
 def addMainModuleDoc (env : Environment) (doc : ModuleDoc) : Environment :=
   moduleDocExt.addEntry env doc
 
-def getMainModuleDoc (env : Environment) : Std.PersistentArray ModuleDoc :=
+def getMainModuleDoc (env : Environment) : PersistentArray ModuleDoc :=
   moduleDocExt.getState env
 
 def getModuleDoc? (env : Environment) (moduleName : Name) : Option (Array ModuleDoc) :=
@@ -91,5 +90,10 @@ def getDocStringText [Monad m] [MonadError m] [MonadRef m] (stx : TSyntax `Lean.
   match stx.raw[1] with
   | Syntax.atom _ val => return val.extract 0 (val.endPos - ⟨2⟩)
   | _                 => throwErrorAt stx "unexpected doc string{indentD stx.raw[1]}"
+
+def TSyntax.getDocString (stx : TSyntax `Lean.Parser.Command.docComment) : String :=
+  match stx.raw[1] with
+  | Syntax.atom _ val => val.extract 0 (val.endPos - ⟨2⟩)
+  | _                 => ""
 
 end Lean

@@ -3,17 +3,8 @@ Copyright (c) 2019 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-import Lean.Log
-import Lean.Parser.Command
-import Lean.ResolveName
-import Lean.Meta.Reduce
-import Lean.Elab.Term
-import Lean.Elab.Tactic.Cache
 import Lean.Elab.Binders
 import Lean.Elab.SyntheticMVars
-import Lean.Elab.DeclModifiers
-import Lean.Elab.InfoTree
-import Lean.Elab.SetOption
 
 namespace Lean.Elab.Command
 
@@ -130,7 +121,7 @@ private def mkCoreContext (ctx : Context) (s : State) (heartbeats : Nat) : Core.
 
 private def addTraceAsMessagesCore (ctx : Context) (log : MessageLog) (traceState : TraceState) : MessageLog := Id.run do
   if traceState.traces.isEmpty then return log
-  let mut traces : Std.HashMap (String.Pos × String.Pos) (Array MessageData) := ∅
+  let mut traces : HashMap (String.Pos × String.Pos) (Array MessageData) := ∅
   for traceElem in traceState.traces do
     let ref := replaceRef traceElem.ref ctx.ref
     let pos := ref.getPos?.getD 0
@@ -222,15 +213,15 @@ instance : MonadQuotation CommandElabM where
   getMainModule       := Command.getMainModule
   withFreshMacroScope := Command.withFreshMacroScope
 
-unsafe def mkCommandElabAttributeUnsafe : IO (KeyedDeclsAttribute CommandElab) :=
-  mkElabAttribute CommandElab `Lean.Elab.Command.commandElabAttribute `builtinCommandElab `commandElab `Lean.Parser.Command `Lean.Elab.Command.CommandElab "command"
+unsafe def mkCommandElabAttributeUnsafe (ref : Name) : IO (KeyedDeclsAttribute CommandElab) :=
+  mkElabAttribute CommandElab `builtinCommandElab `commandElab `Lean.Parser.Command `Lean.Elab.Command.CommandElab "command" ref
 
 @[implementedBy mkCommandElabAttributeUnsafe]
-opaque mkCommandElabAttribute : IO (KeyedDeclsAttribute CommandElab)
+opaque mkCommandElabAttribute (ref : Name) : IO (KeyedDeclsAttribute CommandElab)
 
-builtin_initialize commandElabAttribute : KeyedDeclsAttribute CommandElab ← mkCommandElabAttribute
+builtin_initialize commandElabAttribute : KeyedDeclsAttribute CommandElab ← mkCommandElabAttribute decl_name%
 
-private def mkInfoTree (elaborator : Name) (stx : Syntax) (trees : Std.PersistentArray InfoTree) : CommandElabM InfoTree := do
+private def mkInfoTree (elaborator : Name) (stx : Syntax) (trees : PersistentArray InfoTree) : CommandElabM InfoTree := do
   let ctx ← read
   let s ← get
   let scope := s.scopes.head!

@@ -3,11 +3,6 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
-import Lean.KeyedDeclsAttribute
-import Lean.ProjFns
-import Lean.Syntax
-import Lean.Meta.Transform
-import Lean.Meta.Match.Match
 import Lean.Elab.Term
 import Lean.Elab.AuxDiscr
 import Lean.PrettyPrinter.Delaborator.Options
@@ -52,7 +47,7 @@ structure State where
   /-- We attach `Elab.Info` at various locations in the `Syntax` output in order to convey
   its semantics. While the elaborator emits `InfoTree`s, here we have no real text location tree
   to traverse, so we use a flattened map. -/
-  infos    : Std.RBMap Pos Info compare := {}
+  infos    : PosMap Info := {}
   /-- See `SubExpr.nextExtraPos`. -/
   holeIter : SubExpr.HoleIterator := {}
 
@@ -273,10 +268,10 @@ to true or `pp.notation` is set to false, it will not be called at all.",
 
 end Delaborator
 
-open SubExpr (Pos)
+open SubExpr (Pos PosMap)
 open Delaborator (OptionsPerPos topDownAnalyze)
 
-def delabCore (e : Expr) (optionsPerPos : OptionsPerPos := {}) (delab := Delaborator.delab) : MetaM (Term × Std.RBMap Pos Elab.Info compare) := do
+def delabCore (e : Expr) (optionsPerPos : OptionsPerPos := {}) (delab := Delaborator.delab) : MetaM (Term × PosMap Elab.Info) := do
   /- Using `erasePatternAnnotations` here is a bit hackish, but we do it
      `Expr.mdata` affects the delaborator. TODO: should we fix that? -/
   let e ← Meta.erasePatternRefAnnotations e

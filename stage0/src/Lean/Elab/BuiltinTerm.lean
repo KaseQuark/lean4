@@ -3,7 +3,8 @@ Copyright (c) 2021 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
-import Lean.Elab.Term
+import Lean.Elab.Open
+import Lean.Elab.SetOption
 import Lean.Elab.Eval
 
 namespace Lean.Elab.Term
@@ -54,7 +55,8 @@ private def elabOptLevel (stx : Syntax) : TermElabM Level :=
     elabPipeCompletion stx expectedType?
 
 @[builtinTermElab «hole»] def elabHole : TermElab := fun stx expectedType? => do
-  let mvar ← mkFreshExprMVar expectedType?
+  let kind := if (← read).inPattern || !(← read).holesAsSyntheticOpaque then MetavarKind.natural else MetavarKind.syntheticOpaque
+  let mvar ← mkFreshExprMVar expectedType? kind
   registerMVarErrorHoleInfo mvar.mvarId! stx
   pure mvar
 

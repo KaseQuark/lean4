@@ -3,13 +3,10 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
-import Lean.ResolveName
-import Lean.ScopedEnvExtension
 import Lean.Parser.Basic
-import Lean.Parser.StrInterpolation
-import Lean.KeyedDeclsAttribute
+import Lean.Compiler.InitAttr
+import Lean.ScopedEnvExtension
 import Lean.DocString
-import Lean.DeclarationRange
 
 /-! Extensible parsing via attributes -/
 
@@ -342,7 +339,6 @@ private def ParserExtension.OLeanEntry.toEntry (s : State) : OLeanEntry → Impo
 
 builtin_initialize parserExtension : ParserExtension ←
   registerScopedEnvExtension {
-    name            := `parserExt
     mkInitial       := ParserExtension.mkInitial
     addEntry        := ParserExtension.addEntryImpl
     toOLeanEntry    := ParserExtension.Entry.toOLeanEntry

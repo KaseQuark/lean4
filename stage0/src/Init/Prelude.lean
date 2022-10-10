@@ -107,8 +107,8 @@ This is the universe-polymorphic version of `Unit`; it is preferred to use
 For more information about universe levels: [Types as objects](https://leanprover.github.io/theorem_proving_in_lean4/dependent_type_theory.html#types-as-objects)
 -/
 inductive PUnit : Sort u where
-  | /-- `PUnit.unit : PUnit` is the canonical element of the unit type. -/
-    unit : PUnit
+  /-- `PUnit.unit : PUnit` is the canonical element of the unit type. -/
+  | unit : PUnit
 
 /--
 The unit type, the canonical type with one element, named `unit` or `()`.
@@ -136,9 +136,6 @@ It can also be written as `()`.
 
 /-- Marker for information that has been erased by the code generator. -/
 unsafe axiom lcErased : Type
-
-/-- "Any" type in the simpler type system used by the code generator. -/
-unsafe axiom lcAny : Type
 
 /--
 Auxiliary unsafe constant used by the Compiler when erasing proofs from code.
@@ -177,9 +174,9 @@ In other words, `True` is simply true, and has a canonical proof, `True.intro`
 For more information: [Propositional Logic](https://leanprover.github.io/theorem_proving_in_lean4/propositions_and_proofs.html#propositional-logic)
 -/
 inductive True : Prop where
-  | /-- `True` is true, and `True.intro` (or more commonly, `trivial`)
-    is the proof. -/
-    intro : True
+  /-- `True` is true, and `True.intro` (or more commonly, `trivial`)
+  is the proof. -/
+  | intro : True
 
 /--
 `False` is the empty proposition. Thus, it has no introduction rules.
@@ -264,9 +261,9 @@ The triangle in the second presentation is a macro built on top of `Eq.subst` an
 For more information: [Equality](https://leanprover.github.io/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)
 -/
 inductive Eq : α → α → Prop where
-  | /-- `Eq.refl a : a = a` is reflexivity, the unique constructor of the
-    equality type. See also `rfl`, which is usually used instead. -/
-    refl (a : α) : Eq a a
+  /-- `Eq.refl a : a = a` is reflexivity, the unique constructor of the
+  equality type. See also `rfl`, which is usually used instead. -/
+  | refl (a : α) : Eq a a
 
 /-- Non-dependent recursor for the equality type. -/
 @[simp] abbrev Eq.ndrec.{u1, u2} {α : Sort u2} {a : α} {motive : α → Sort u1} (m : motive a) {b : α} (h : Eq a b) : motive b :=
@@ -444,8 +441,8 @@ and `f x` and `g y` are well typed it does not follow that `HEq (f x) (g y)`.
 the same type then `a = b` and `HEq a b` ae equivalent.
 -/
 inductive HEq : {α : Sort u} → α → {β : Sort u} → β → Prop where
-  | /-- Reflexivity of heterogeneous equality. -/
-    refl (a : α) : HEq a a
+  /-- Reflexivity of heterogeneous equality. -/
+  | refl (a : α) : HEq a a
 
 /-- A version of `HEq.refl` with an implicit argument. -/
 @[matchPattern] protected def HEq.rfl {α : Sort u} {a : α} : HEq a a :=
@@ -516,10 +513,10 @@ and you can use `match` or `cases` to destruct an `Or` assumption into the
 two cases.
 -/
 inductive Or (a b : Prop) : Prop where
-  | /-- `Or.inl` is "left injection" into an `Or`. If `h : a` then `Or.inl h : a ∨ b`. -/
-    inl (h : a) : Or a b
-  | /-- `Or.inr` is "right injection" into an `Or`. If `h : b` then `Or.inr h : a ∨ b`. -/
-    inr (h : b) : Or a b
+  /-- `Or.inl` is "left injection" into an `Or`. If `h : a` then `Or.inl h : a ∨ b`. -/
+  | inl (h : a) : Or a b
+  /-- `Or.inr` is "right injection" into an `Or`. If `h : b` then `Or.inr h : a ∨ b`. -/
+  | inr (h : b) : Or a b
 
 /-- Alias for `Or.inl`. -/
 theorem Or.intro_left (b : Prop) (h : a) : Or a b :=
@@ -546,10 +543,10 @@ code generator, while `Bool` corresponds to the type called `bool` or `boolean`
 in most programming languages.
 -/
 inductive Bool : Type where
-  | /-- The boolean value `false`, not to be confused with the proposition `False`. -/
-    false : Bool
-  | /-- The boolean value `true`, not to be confused with the proposition `True`. -/
-    true : Bool
+  /-- The boolean value `false`, not to be confused with the proposition `False`. -/
+  | false : Bool
+  /-- The boolean value `true`, not to be confused with the proposition `True`. -/
+  | true : Bool
 
 export Bool (false true)
 
@@ -664,8 +661,8 @@ Given `Nonempty α`, you can construct an element of `α` *nonconstructively*
 using `Classical.choice`.
 -/
 class inductive Nonempty (α : Sort u) : Prop where
-  | /-- If `val : α`, then `α` is nonempty. -/
-    intro (val : α) : Nonempty α
+  /-- If `val : α`, then `α` is nonempty. -/
+  | intro (val : α) : Nonempty α
 
 /--
 **The axiom of choice**. `Nonempty α` is a proof that `α` has an element,
@@ -788,10 +785,10 @@ If a proposition `p` is `Decidable`, then `(by decide : p)` will prove it by
 evaluating the decidability instance to `isTrue h` and returning `h`.
 -/
 class inductive Decidable (p : Prop) where
-  | /-- Prove that `p` is decidable by supplying a proof of `¬p` -/
-    isFalse (h : Not p) : Decidable p
-  | /-- Prove that `p` is decidable by supplying a proof of `p` -/
-    isTrue (h : p) : Decidable p
+  /-- Prove that `p` is decidable by supplying a proof of `¬p` -/
+  | isFalse (h : Not p) : Decidable p
+  /-- Prove that `p` is decidable by supplying a proof of `p` -/
+  | isTrue (h : p) : Decidable p
 
 /--
 Convert a decidable proposition into a boolean value.
@@ -1012,12 +1009,12 @@ This type is special-cased by both the kernel and the compiler:
   library (usually [GMP](https://gmplib.org/)).
 -/
 inductive Nat where
-  | /-- `Nat.zero`, normally written `0 : Nat`, is the smallest natural number.
-    This is one of the two constructors of `Nat`. -/
-    zero : Nat
-  | /-- The successor function on natural numbers, `succ n = n + 1`.
-    This is one of the two constructors of `Nat`. -/
-    succ (n : Nat) : Nat
+  /-- `Nat.zero`, normally written `0 : Nat`, is the smallest natural number.
+  This is one of the two constructors of `Nat`. -/
+  | zero : Nat
+  /-- The successor function on natural numbers, `succ n = n + 1`.
+  This is one of the two constructors of `Nat`. -/
+  | succ (n : Nat) : Nat
 
 instance : Inhabited Nat where
   default := Nat.zero
@@ -1517,10 +1514,10 @@ An inductive definition of the less-equal relation on natural numbers,
 characterized as the least relation `≤` such that `n ≤ n` and `n ≤ m → n ≤ m + 1`.
 -/
 protected inductive Nat.le (n : Nat) : Nat → Prop
-  | /-- Less-equal is reflexive: `n ≤ n` -/
-    refl     : Nat.le n n
-  | /-- If `n ≤ m`, then `n ≤ m + 1`. -/
-    step {m} : Nat.le n m → Nat.le n (succ m)
+  /-- Less-equal is reflexive: `n ≤ n` -/
+  | refl     : Nat.le n n
+  /-- If `n ≤ m`, then `n ≤ m + 1`. -/
+  | step {m} : Nat.le n m → Nat.le n (succ m)
 
 instance : LE Nat where
   le := Nat.le
@@ -2097,10 +2094,10 @@ def map (f : α → β) (x : Option α) : Option β :=
 ```
 -/
 inductive Option (α : Type u) where
-  | /-- No value. -/
-    none : Option α
-  | /-- Some value of type `α`. -/
-    some (val : α) : Option α
+  /-- No value. -/
+  | none : Option α
+  /-- Some value of type `α`. -/
+  | some (val : α) : Option α
 
 attribute [unbox] Option
 
@@ -2140,11 +2137,11 @@ It is implemented as a linked list.
   performance because it can do destructive updates.
 -/
 inductive List (α : Type u) where
-  | /-- `[]` is the empty list. -/
-    nil : List α
-  | /-- If `a : α` and `l : List α`, then `cons a l`, or `a :: l`, is the
-    list whose first element is `a` and with `l` as the rest of the list. -/
-    cons (head : α) (tail : List α) : List α
+  /-- `[]` is the empty list. -/
+  | nil : List α
+  /-- If `a : α` and `l : List α`, then `cons a l`, or `a :: l`, is the
+  list whose first element is `a` and with `l` as the rest of the list. -/
+  | cons (head : α) (tail : List α) : List α
 
 instance {α} : Inhabited (List α) where
   default := List.nil
@@ -2169,7 +2166,7 @@ Folds a function over a list from the left:
 `foldl f z [a, b, c] = f (f (f z a) b) c`
 -/
 @[specialize]
-def List.foldl {α β} (f : α → β → α) : (init : α) → List β → α
+def List.foldl {α : Type u} {β : Type v} (f : α → β → α) : (init : α) → List β → α
   | a, nil      => a
   | a, cons b l => foldl f (f a b) l
 
@@ -2341,6 +2338,10 @@ instance (p₁ p₂ : String.Pos) : Decidable (LT.lt p₁ p₂) :=
   startPos := {}
   stopPos  := s.endPos
 
+/-- `String.toSubstring` without `[inline]` annotation. -/
+def String.toSubstring' (s : String) : Substring :=
+  s.toSubstring
+
 /--
 This function will cast a value of type `α` to type `β`, and is a no-op in the
 compiler. This function is **extremely dangerous** because there is no guarantee
@@ -2381,7 +2382,7 @@ When we reimplement the specializer, we may consider copying `inst` if it also
 occurs outside binders or if it is an instance.
 -/
 @[neverExtract, extern "lean_panic_fn"]
-opaque panicCore {α : Type u} [Inhabited α] (msg : String) : α
+def panicCore {α : Type u} [Inhabited α] (msg : String) : α := default
 
 /--
 `(panic "msg" : α)` has a built-in implementation which prints `msg` to
@@ -2497,6 +2498,42 @@ Push an element onto the end of an array. This is amortized O(1) because
 def Array.push {α : Type u} (a : Array α) (v : α) : Array α where
   data := List.concat a.data v
 
+/-- Create array `#[]` -/
+def Array.mkArray0 {α : Type u} : Array α :=
+  mkEmpty 0
+
+/-- Create array `#[a₁]` -/
+def Array.mkArray1 {α : Type u} (a₁ : α) : Array α :=
+  (mkEmpty 1).push a₁
+
+/-- Create array `#[a₁, a₂]` -/
+def Array.mkArray2 {α : Type u} (a₁ a₂ : α) : Array α :=
+  ((mkEmpty 1).push a₁).push a₂
+
+/-- Create array `#[a₁, a₂, a₃]` -/
+def Array.mkArray3 {α : Type u} (a₁ a₂ a₃ : α) : Array α :=
+  (((mkEmpty 1).push a₁).push a₂).push a₃
+
+/-- Create array `#[a₁, a₂, a₃, a₄]` -/
+def Array.mkArray4 {α : Type u} (a₁ a₂ a₃ a₄ : α) : Array α :=
+  ((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄
+
+/-- Create array `#[a₁, a₂, a₃, a₄, a₅]` -/
+def Array.mkArray5 {α : Type u} (a₁ a₂ a₃ a₄ a₅ : α) : Array α :=
+  (((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅
+
+/-- Create array `#[a₁, a₂, a₃, a₄, a₅, a₆]` -/
+def Array.mkArray6 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ : α) : Array α :=
+  ((((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆
+
+/-- Create array `#[a₁, a₂, a₃, a₄, a₅, a₆, a₇]` -/
+def Array.mkArray7 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ a₇ : α) : Array α :=
+  (((((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇
+
+/-- Create array `#[a₁, a₂, a₃, a₄, a₅, a₆, a₇, a₈]` -/
+def Array.mkArray8 {α : Type u} (a₁ a₂ a₃ a₄ a₅ a₆ a₇ a₈ : α) : Array α :=
+  ((((((((mkEmpty 1).push a₁).push a₂).push a₃).push a₄).push a₅).push a₆).push a₇).push a₈
+
 /--
 Set an element in an array without bounds checks, using a `Fin` index.
 
@@ -2610,7 +2647,7 @@ class SeqLeft (f : Type u → Type v) : Type (max (u+1) v) where
   `Unit → f β` function. -/
   seqLeft : {α β : Type u} → f α → (Unit → f β) → f α
 
-/-- The typeclass which supplies the `<*` "seqRight" function. See `Applicative`. -/
+/-- The typeclass which supplies the `*>` "seqRight" function. See `Applicative`. -/
 class SeqRight (f : Type u → Type v) : Type (max (u+1) v) where
   /-- If `x : F α` and `y : F β`, then `x *> y` evaluates `x`, then `y`,
   and returns the result of `y`.
@@ -2662,6 +2699,9 @@ instance {α : Type u} {m : Type u → Type v} [Monad m] : Inhabited (α → m �
 
 instance {α : Type u} {m : Type u → Type v} [Monad m] [Inhabited α] : Inhabited (m α) where
   default := pure default
+
+instance [Monad m] : [Nonempty α] → Nonempty (m α)
+  | ⟨x⟩ => ⟨pure x⟩
 
 /-- A fusion of Haskell's `sequence` and `map`. Used in syntax quotations. -/
 def Array.sequenceMap {α : Type u} {β : Type v} {m : Type v → Type w} [Monad m] (as : Array α) (f : α → m β) : m (Array β) :=
@@ -2743,10 +2783,10 @@ value of type `α`. The error type is listed first because
 operation returns the first encountered `error`.
 -/
 inductive Except (ε : Type u) (α : Type v) where
-  | /-- A failure value of type `ε` -/
-    error : ε → Except ε α
-  | /-- A success value of type `α` -/
-    ok    : α → Except ε α
+  /-- A failure value of type `ε` -/
+  | error : ε → Except ε α
+  /-- A success value of type `α` -/
+  | ok    : α → Except ε α
 
 attribute [unbox] Except
 
@@ -3067,10 +3107,10 @@ namespace EStateM
 combined inductive yields a more efficient data representation.
 -/
 inductive Result (ε σ α : Type u) where
-  | /-- A success value of type `α`, and a new state `σ`. -/
-    ok    : α → σ → Result ε σ α
-  | /-- A failure value of type `ε`, and a new state `σ`. -/
-    error : ε → σ → Result ε σ α
+  /-- A success value of type `α`, and a new state `σ`. -/
+  | ok    : α → σ → Result ε σ α
+  /-- A failure value of type `ε`, and a new state `σ`. -/
+  | error : ε → σ → Result ε σ α
 
 variable {ε σ α : Type u}
 
@@ -3273,23 +3313,23 @@ corresponds to a Lean declaration in scope.
 If the name is not in scope, Lean will report an error.
 -/
 inductive Name where
-  | /-- The "anonymous" name. -/
-    anonymous : Name
-  | /--
-    A string name. The name `Lean.Meta.run` is represented at
-    ```lean
-    .str (.str (.str .anonymous "Lean") "Meta") "run"
-    ```
-    -/
-    str (pre : Name) (str : String)
-  | /--
-    A numerical name. This kind of name is used, for example, to create hierarchical names for
-    free variables and metavariables. The identifier `_uniq.231` is represented as
-    ```lean
-    .num (.str .anonymous "_uniq") 231
-    ```
-    -/
-    num (pre : Name) (i : Nat)
+  /-- The "anonymous" name. -/
+  | anonymous : Name
+  /--
+  A string name. The name `Lean.Meta.run` is represented at
+  ```lean
+  .str (.str (.str .anonymous "Lean") "Meta") "run"
+  ```
+  -/
+  | str (pre : Name) (str : String)
+  /--
+  A numerical name. This kind of name is used, for example, to create hierarchical names for
+  free variables and metavariables. The identifier `_uniq.231` is represented as
+  ```lean
+  .num (.str .anonymous "_uniq") 231
+  ```
+  -/
+  | num (pre : Name) (i : Nat)
 with
   /-- A hash function for names, which is stored inside the name itself as a
   computed field. -/
@@ -3324,7 +3364,39 @@ abbrev mkNum (p : Name) (v : Nat) : Name :=
 Short for `.str .anonymous s`.
 -/
 abbrev mkSimple (s : String) : Name :=
-  mkStr Name.anonymous s
+  .str .anonymous s
+
+/-- Make name `s₁` -/
+@[reducible] def mkStr1 (s₁ : String) : Name :=
+  .str .anonymous s₁
+
+/-- Make name `s₁.s₂` -/
+@[reducible] def mkStr2 (s₁ s₂ : String) : Name :=
+  .str (.str .anonymous s₁) s₂
+
+/-- Make name `s₁.s₂.s₃` -/
+@[reducible] def mkStr3 (s₁ s₂ s₃ : String) : Name :=
+  .str (.str (.str .anonymous s₁) s₂) s₃
+
+/-- Make name `s₁.s₂.s₃.s₄` -/
+@[reducible] def mkStr4 (s₁ s₂ s₃ s₄ : String) : Name :=
+  .str (.str (.str (.str .anonymous s₁) s₂) s₃) s₄
+
+/-- Make name `s₁.s₂.s₃.s₄.s₅` -/
+@[reducible] def mkStr5 (s₁ s₂ s₃ s₄ s₅ : String) : Name :=
+  .str (.str (.str (.str (.str .anonymous s₁) s₂) s₃) s₄) s₅
+
+/-- Make name `s₁.s₂.s₃.s₄.s₅.s₆` -/
+@[reducible] def mkStr6 (s₁ s₂ s₃ s₄ s₅ s₆ : String) : Name :=
+  .str (.str (.str (.str (.str (.str .anonymous s₁) s₂) s₃) s₄) s₅) s₆
+
+/-- Make name `s₁.s₂.s₃.s₄.s₅.s₆.s₇` -/
+@[reducible] def mkStr7 (s₁ s₂ s₃ s₄ s₅ s₆ s₇ : String) : Name :=
+  .str (.str (.str (.str (.str (.str (.str .anonymous s₁) s₂) s₃) s₄) s₅) s₆) s₇
+
+/-- Make name `s₁.s₂.s₃.s₄.s₅.s₆.s₇.s₈` -/
+@[reducible] def mkStr8 (s₁ s₂ s₃ s₄ s₅ s₆ s₇ s₈ : String) : Name :=
+  .str (.str (.str (.str (.str (.str (.str (.str .anonymous s₁) s₂) s₃) s₄) s₅) s₆) s₇) s₈
 
 /-- (Boolean) equality comparator for names. -/
 @[extern "lean_name_eq"]
@@ -3358,22 +3430,38 @@ end Name
 
 /-- Source information of tokens. -/
 inductive SourceInfo where
-  | /--
-    Token from original input with whitespace and position information.
-    `leading` will be inferred after parsing by `Syntax.updateLeading`. During parsing,
-    it is not at all clear what the preceding token was, especially with backtracking.
-    -/
-   original (leading : Substring) (pos : String.Pos) (trailing : Substring) (endPos : String.Pos)
-  | /--
-    Synthesized syntax (e.g. from a quotation) annotated with a span from the original source.
-    In the delaborator, we "misuse" this constructor to store synthetic positions identifying
-    subterms.
-    -/
-    synthetic (pos : String.Pos) (endPos : String.Pos)
-  | /--
-    Synthesized token without position information.
-    -/
-    protected none
+  /--
+  Token from original input with whitespace and position information.
+  `leading` will be inferred after parsing by `Syntax.updateLeading`. During parsing,
+  it is not at all clear what the preceding token was, especially with backtracking.
+  -/
+  | original (leading : Substring) (pos : String.Pos) (trailing : Substring) (endPos : String.Pos)
+  /--
+  Synthesized syntax (e.g. from a quotation) annotated with a span from the original source.
+  In the delaborator, we "misuse" this constructor to store synthetic positions identifying
+  subterms.
+
+  The `canonical` flag on synthetic syntax is enabled for syntax that is not literally part
+  of the original input syntax but should be treated "as if" the user really wrote it
+  for the purpose of hovers and error messages. This is usually used on identifiers,
+  to connect the binding site to the user's original syntax even if the name of the identifier
+  changes during expansion, as well as on tokens where we will attach targeted messages.
+
+  The syntax `token%$stx` in a syntax quotation will annotate the token `token` with the span
+  from `stx` and also mark it as canonical.
+
+  As a rough guide, a macro expansion should only use a given piece of input syntax in
+  a single canonical token, although this is sometimes violated when the same identifier
+  is used to declare two binders, as in the macro expansion for dependent if:
+  ```
+  `(if $h : $cond then $t else $e) ~>
+  `(dite $cond (fun $h => $t) (fun $h => $t))
+  ```
+  In these cases if the user hovers over `h` they will see information about both binding sites.
+  -/
+  | synthetic (pos : String.Pos) (endPos : String.Pos) (canonical := false)
+  /-- Synthesized token without position information. -/
+  | protected none
 
 instance : Inhabited SourceInfo := ⟨SourceInfo.none⟩
 
@@ -3383,9 +3471,10 @@ namespace SourceInfo
 Gets the position information from a `SourceInfo`, if available.
 If `originalOnly` is true, then `.synthetic` syntax will also return `none`.
 -/
-def getPos? (info : SourceInfo) (originalOnly := false) : Option String.Pos :=
-  match info, originalOnly with
-  | original (pos := pos) ..,  _     => some pos
+def getPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match info, canonicalOnly with
+  | original (pos := pos) ..,  _
+  | synthetic (pos := pos) (canonical := true) .., _
   | synthetic (pos := pos) .., false => some pos
   | _,                         _     => none
 
@@ -3408,50 +3497,50 @@ Note: We do not statically know whether a syntax expects a namespace or term nam
 so a `Syntax.ident` may contain both preresolution kinds.
 -/
 inductive Syntax.Preresolved where
-  | /-- A potential namespace reference -/
-    namespace (ns : Name)
-  | /-- A potential global constant or section variable reference, with additional field accesses -/
-    decl (n : Name) (fields : List String)
+  /-- A potential namespace reference -/
+  | namespace (ns : Name)
+  /-- A potential global constant or section variable reference, with additional field accesses -/
+  | decl (n : Name) (fields : List String)
 
 /--
 Syntax objects used by the parser, macro expander, delaborator, etc.
 -/
 inductive Syntax where
-  | /-- A `missing` syntax corresponds to a portion of the syntax tree that is
-    missing because of a parse error. The indexing operator on Syntax also
-    returns `missing` for indexing out of bounds. -/
-    missing : Syntax
-  | /-- Node in the syntax tree.
+  /-- A `missing` syntax corresponds to a portion of the syntax tree that is
+  missing because of a parse error. The indexing operator on Syntax also
+  returns `missing` for indexing out of bounds. -/
+  | missing : Syntax
+  /-- Node in the syntax tree.
 
-    The `info` field is used by the delaborator to store the position of the
-    subexpression corresponding to this node. The parser sets the `info` field
-    to `none`.
-    The parser sets the `info` field to `none`, with position retrieval continuing recursively.
-    Nodes created by quotatons use the result from `SourceInfo.fromRef` so that they are marked
-    as synthetic even when the leading/trailing token is not.
-    The delaborator uses the `info` field to store the position of the subexpression
-    corresponding to this node.
+  The `info` field is used by the delaborator to store the position of the
+  subexpression corresponding to this node. The parser sets the `info` field
+  to `none`.
+  The parser sets the `info` field to `none`, with position retrieval continuing recursively.
+  Nodes created by quotatons use the result from `SourceInfo.fromRef` so that they are marked
+  as synthetic even when the leading/trailing token is not.
+  The delaborator uses the `info` field to store the position of the subexpression
+  corresponding to this node.
 
-    (Remark: the `node` constructor did not have an `info` field in previous
-    versions. This caused a bug in the interactive widgets, where the popup for
-    `a + b` was the same as for `a`. The delaborator used to associate
-    subexpressions with pretty-printed syntax by setting the (string) position
-    of the first atom/identifier to the (expression) position of the
-    subexpression. For example, both `a` and `a + b` have the same first
-    identifier, and so their infos got mixed up.) -/
-    node   (info : SourceInfo) (kind : SyntaxNodeKind) (args : Array Syntax) : Syntax
-  | /-- An `atom` corresponds to a keyword or piece of literal unquoted syntax.
-    These correspond to quoted strings inside `syntax` declarations.
-    For example, in `(x + y)`, `"("`, `"+"` and `")"` are `atom`
-    and `x` and `y` are `ident`. -/
-    atom   (info : SourceInfo) (val : String) : Syntax
-  | /-- An `ident` corresponds to an identifier as parsed by the `ident` or
-    `rawIdent` parsers.
-    * `rawVal` is the literal substring from the input file
-    * `val` is the parsed identifier (with hygiene)
-    * `preresolved` is the list of possible declarations this could refer to
-    -/
-    ident  (info : SourceInfo) (rawVal : Substring) (val : Name) (preresolved : List Syntax.Preresolved) : Syntax
+  (Remark: the `node` constructor did not have an `info` field in previous
+  versions. This caused a bug in the interactive widgets, where the popup for
+  `a + b` was the same as for `a`. The delaborator used to associate
+  subexpressions with pretty-printed syntax by setting the (string) position
+  of the first atom/identifier to the (expression) position of the
+  subexpression. For example, both `a` and `a + b` have the same first
+  identifier, and so their infos got mixed up.) -/
+  | node   (info : SourceInfo) (kind : SyntaxNodeKind) (args : Array Syntax) : Syntax
+  /-- An `atom` corresponds to a keyword or piece of literal unquoted syntax.
+  These correspond to quoted strings inside `syntax` declarations.
+  For example, in `(x + y)`, `"("`, `"+"` and `")"` are `atom`
+  and `x` and `y` are `ident`. -/
+  | atom   (info : SourceInfo) (val : String) : Syntax
+  /-- An `ident` corresponds to an identifier as parsed by the `ident` or
+  `rawIdent` parsers.
+  * `rawVal` is the literal substring from the input file
+  * `val` is the parsed identifier (with hygiene)
+  * `preresolved` is the list of possible declarations this could refer to
+  -/
+  | ident  (info : SourceInfo) (rawVal : Substring) (val : Name) (preresolved : List Syntax.Preresolved) : Syntax
 
 /-- `SyntaxNodeKinds` is a set of `SyntaxNodeKind` (implemented as a list). -/
 def SyntaxNodeKinds := List SyntaxNodeKind
@@ -3651,30 +3740,33 @@ partial def getHeadInfo (stx : Syntax) : SourceInfo :=
 
 /--
 Get the starting position of the syntax, if possible.
-If `originalOnly` is true, `synthetic` nodes are treated as not carrying
+If `canonicalOnly` is true, non-canonical `synthetic` nodes are treated as not carrying
 position information.
 -/
-def getPos? (stx : Syntax) (originalOnly := false) : Option String.Pos :=
-  stx.getHeadInfo.getPos? originalOnly
+def getPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
+  stx.getHeadInfo.getPos? canonicalOnly
 
 
 /--
 Get the ending position of the syntax, if possible.
-If `originalOnly` is true, `synthetic` nodes are treated as not carrying
+If `canonicalOnly` is true, non-canonical `synthetic` nodes are treated as not carrying
 position information.
 -/
-partial def getTailPos? (stx : Syntax) (originalOnly := false) : Option String.Pos :=
-  match stx, originalOnly with
-  | atom (SourceInfo.original (endPos := pos) ..) ..,    _    => some pos
-  | atom (SourceInfo.synthetic (endPos := pos) ..) _,  false  => some pos
-  | ident (SourceInfo.original (endPos := pos) ..) .., _      => some pos
-  | ident (SourceInfo.synthetic (endPos := pos) ..) .., false => some pos
-  | node (SourceInfo.original (endPos := pos) ..) ..,    _    => some pos
-  | node (SourceInfo.synthetic (endPos := pos) ..) .., false  => some pos
-  | node _ _ args,                                        _     =>
+partial def getTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
+  match stx, canonicalOnly with
+  | atom (SourceInfo.original (endPos := pos) ..) .., _
+  | atom (SourceInfo.synthetic (endPos := pos) (canonical := true) ..) _, _
+  | atom (SourceInfo.synthetic (endPos := pos) ..) _,  false
+  | ident (SourceInfo.original (endPos := pos) ..) .., _
+  | ident (SourceInfo.synthetic (endPos := pos) (canonical := true) ..) .., _
+  | ident (SourceInfo.synthetic (endPos := pos) ..) .., false
+  | node (SourceInfo.original (endPos := pos) ..) .., _
+  | node (SourceInfo.synthetic (endPos := pos) (canonical := true) ..) .., _
+  | node (SourceInfo.synthetic (endPos := pos) ..) .., false => some pos
+  | node _ _ args, _ =>
     let rec loop (i : Nat) : Option String.Pos :=
       match decide (LT.lt i args.size) with
-      | true => match getTailPos? (args.get! ((args.size.sub i).sub 1)) originalOnly with
+      | true => match getTailPos? (args.get! ((args.size.sub i).sub 1)) canonicalOnly with
          | some info => some info
          | none      => loop (hAdd i 1)
       | false => none
@@ -3716,18 +3808,25 @@ unsafe def TSyntaxArray.mkImpl : Array Syntax → TSyntaxArray ks := unsafeCast
 opaque TSyntaxArray.mk (as : Array Syntax) : TSyntaxArray ks := Array.empty
 
 /-- Constructs a synthetic `SourceInfo` using a `ref : Syntax` for the span. -/
-def SourceInfo.fromRef (ref : Syntax) : SourceInfo :=
-  match ref.getPos?, ref.getTailPos? with
-  | some pos, some tailPos => SourceInfo.synthetic pos tailPos
-  | _,        _            => SourceInfo.none
+def SourceInfo.fromRef (ref : Syntax) (canonical := false) : SourceInfo :=
+  let noncanonical ref :=
+    match ref.getPos?, ref.getTailPos? with
+    | some pos, some tailPos => .synthetic pos tailPos
+    | _,        _            => .none
+  match canonical with
+  | true =>
+    match ref.getPos? true, ref.getTailPos? true with
+    | some pos, some tailPos => .synthetic pos tailPos true
+    | _,        _            => noncanonical ref
+  | false => noncanonical ref
 
 /-- Constructs a synthetic `atom` with no source info. -/
 def mkAtom (val : String) : Syntax :=
   Syntax.atom SourceInfo.none val
 
 /-- Constructs a synthetic `atom` with source info coming from `src`. -/
-def mkAtomFrom (src : Syntax) (val : String) : Syntax :=
-  Syntax.atom (SourceInfo.fromRef src) val
+def mkAtomFrom (src : Syntax) (val : String) (canonical := false) : Syntax :=
+  Syntax.atom (SourceInfo.fromRef src canonical) val
 
 /-! # Parser descriptions -/
 
@@ -3736,48 +3835,48 @@ A `ParserDescr` is a grammar for parsers. This is used by the `syntax` command
 to produce parsers without having to `import Lean`.
 -/
 inductive ParserDescr where
-  | /-- A (named) nullary parser, like `ppSpace` -/
-    const  (name : Name)
-  | /-- A (named) unary parser, like `group(p)` -/
-    unary  (name : Name) (p : ParserDescr)
-  | /-- A (named) binary parser, like `orelse` or `andthen`
-    (written as `p1 <|> p2` and `p1 p2` respectively in `syntax`) -/
-    binary (name : Name) (p₁ p₂ : ParserDescr)
-  | /-- Parses using `p`, then pops the stack to create a new node with kind `kind`.
-    The precedence `prec` is used to determine whether the parser should apply given
-    the current precedence level. -/
-    node (kind : SyntaxNodeKind) (prec : Nat) (p : ParserDescr)
-  | /-- Like `node` but for trailing parsers (which start with a nonterminal).
-    Assumes the lhs is already on the stack, and parses using `p`, then pops the
-    stack including the lhs to create a new node with kind `kind`.
-    The precedence `prec` and `lhsPrec` are used to determine whether the parser
-    should apply. -/
-    trailingNode (kind : SyntaxNodeKind) (prec lhsPrec : Nat) (p : ParserDescr)
-  | /-- A literal symbol parser: parses `val` as a literal.
-    This parser does not work on identifiers, so `symbol` arguments are declared
-    as "keywords" and cannot be used as identifiers anywhere in the file. -/
-    symbol (val : String)
-  | /-- Like `symbol`, but without reserving `val` as a keyword.
-    If `includeIdent` is true then `ident` will be reinterpreted as `atom` if it matches. -/
-    nonReservedSymbol (val : String) (includeIdent : Bool)
-  | /-- Parses using the category parser `catName` with right binding power
-    (i.e. precedence) `rbp`. -/
-    cat (catName : Name) (rbp : Nat)
-  | /-- Parses using another parser `declName`, which can be either
-    a `Parser` or `ParserDescr`. -/
-    parser (declName : Name)
-  | /-- Like `node`, but also declares that the body can be matched using an antiquotation
-    with name `name`. For example, `def $id:declId := 1` uses an antiquotation with
-    name `declId` in the place where a `declId` is expected. -/
-    nodeWithAntiquot (name : String) (kind : SyntaxNodeKind) (p : ParserDescr)
-  | /-- A `sepBy(p, sep)` parses 0 or more occurrences of `p` separated by `sep`.
-    `psep` is usually the same as `symbol sep`, but it can be overridden.
-    `sep` is only used in the antiquot syntax: `$x;*` would match if `sep` is `";"`.
-    `allowTrailingSep` is true if e.g. `a, b,` is also allowed to match. -/
-    sepBy  (p : ParserDescr) (sep : String) (psep : ParserDescr) (allowTrailingSep : Bool := false)
-  | /-- `sepBy1` is just like `sepBy`, except it takes 1 or more instead of
-    0 or more occurrences of `p`. -/
-    sepBy1 (p : ParserDescr) (sep : String) (psep : ParserDescr) (allowTrailingSep : Bool := false)
+  /-- A (named) nullary parser, like `ppSpace` -/
+  | const  (name : Name)
+  /-- A (named) unary parser, like `group(p)` -/
+  | unary  (name : Name) (p : ParserDescr)
+  /-- A (named) binary parser, like `orelse` or `andthen`
+  (written as `p1 <|> p2` and `p1 p2` respectively in `syntax`) -/
+  | binary (name : Name) (p₁ p₂ : ParserDescr)
+  /-- Parses using `p`, then pops the stack to create a new node with kind `kind`.
+  The precedence `prec` is used to determine whether the parser should apply given
+  the current precedence level. -/
+  | node (kind : SyntaxNodeKind) (prec : Nat) (p : ParserDescr)
+  /-- Like `node` but for trailing parsers (which start with a nonterminal).
+  Assumes the lhs is already on the stack, and parses using `p`, then pops the
+  stack including the lhs to create a new node with kind `kind`.
+  The precedence `prec` and `lhsPrec` are used to determine whether the parser
+  should apply. -/
+  | trailingNode (kind : SyntaxNodeKind) (prec lhsPrec : Nat) (p : ParserDescr)
+  /-- A literal symbol parser: parses `val` as a literal.
+  This parser does not work on identifiers, so `symbol` arguments are declared
+  as "keywords" and cannot be used as identifiers anywhere in the file. -/
+  | symbol (val : String)
+  /-- Like `symbol`, but without reserving `val` as a keyword.
+  If `includeIdent` is true then `ident` will be reinterpreted as `atom` if it matches. -/
+  | nonReservedSymbol (val : String) (includeIdent : Bool)
+  /-- Parses using the category parser `catName` with right binding power
+  (i.e. precedence) `rbp`. -/
+  | cat (catName : Name) (rbp : Nat)
+  /-- Parses using another parser `declName`, which can be either
+  a `Parser` or `ParserDescr`. -/
+  | parser (declName : Name)
+  /-- Like `node`, but also declares that the body can be matched using an antiquotation
+  with name `name`. For example, `def $id:declId := 1` uses an antiquotation with
+  name `declId` in the place where a `declId` is expected. -/
+  | nodeWithAntiquot (name : String) (kind : SyntaxNodeKind) (p : ParserDescr)
+  /-- A `sepBy(p, sep)` parses 0 or more occurrences of `p` separated by `sep`.
+  `psep` is usually the same as `symbol sep`, but it can be overridden.
+  `sep` is only used in the antiquot syntax: `$x;*` would match if `sep` is `";"`.
+  `allowTrailingSep` is true if e.g. `a, b,` is also allowed to match. -/
+  | sepBy  (p : ParserDescr) (sep : String) (psep : ParserDescr) (allowTrailingSep : Bool := false)
+  /-- `sepBy1` is just like `sepBy`, except it takes 1 or more instead of
+  0 or more occurrences of `p`. -/
+  | sepBy1 (p : ParserDescr) (sep : String) (psep : ParserDescr) (allowTrailingSep : Bool := false)
 
 instance : Inhabited ParserDescr where
   default := ParserDescr.symbol ""
@@ -4089,12 +4188,12 @@ structure Context where
 
 /-- An exception in the `MacroM` monad. -/
 inductive Exception where
-  | /-- A general error, given a message and a span (expressed as a `Syntax`). -/
-    error             : Syntax → String → Exception
-  | /-- An unsupported syntax exception. We keep this separate because it is
-    used for control flow: if one macro does not support a syntax then we try
-    the next one. -/
-    unsupportedSyntax : Exception
+  /-- A general error, given a message and a span (expressed as a `Syntax`). -/
+  | error             : Syntax → String → Exception
+  /-- An unsupported syntax exception. We keep this separate because it is
+  used for control flow: if one macro does not support a syntax then we try
+  the next one. -/
+  | unsupportedSyntax : Exception
 
 /-- The mutable state for the `MacroM` monad. -/
 structure State where

@@ -23,7 +23,6 @@ import Lean.Server.References
 import Lean.Server.FileWorker.Utils
 import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.FileWorker.WidgetRequests
-
 import Lean.Server.Rpc.Basic
 import Lean.Widget.InteractiveDiagnostic
 
@@ -54,7 +53,6 @@ namespace Lean.Server.FileWorker
 open Lsp
 open IO
 open Snapshots
-open Std (RBMap RBMap.empty)
 open JsonRpc
 
 structure WorkerContext where
@@ -147,7 +145,7 @@ structure WorkerState where
   pendingRequests : PendingRequestMap
   /-- A map of RPC session IDs. We allow asynchronous elab tasks and request handlers
   to modify sessions. A single `Ref` ensures atomic transactions. -/
-  rpcSessions     : Std.RBMap UInt64 (IO.Ref RpcSession) compare
+  rpcSessions     : RBMap UInt64 (IO.Ref RpcSession) compare
 
 abbrev WorkerM := ReaderT WorkerContext <| StateRefT WorkerState IO
 
@@ -227,9 +225,9 @@ section Initialization
             Elab.InfoTree.node (Elab.Info.ofCommandInfo {
               elaborator := `import
               stx := importStx
-            }) #[].toPersistentArray
-          )).toPersistentArray
-      )].toPersistentArray
+            }) #[].toPArray'
+          )).toPArray'
+      )].toPArray'
     }}
     let headerSnap := {
       beginPos := 0
@@ -262,7 +260,7 @@ section Initialization
     return (ctx,
     { doc             := doc
       pendingRequests := RBMap.empty
-      rpcSessions     := Std.RBMap.empty
+      rpcSessions     := RBMap.empty
     })
 end Initialization
 
@@ -452,7 +450,7 @@ section MainLoop
       handleRequest id method (toJson params)
       mainLoop
     | Message.notification "exit" none =>
-      let doc := (←get).doc
+      let doc := st.doc
       doc.cancelTk.set
       return ()
     | Message.notification method (some params) =>

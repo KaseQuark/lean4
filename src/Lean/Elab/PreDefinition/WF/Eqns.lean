@@ -105,7 +105,7 @@ where
 def simpMatchWF? (info : EqnInfo) (us : List Level) (fixedPrefix : Array Expr) (mvarId : MVarId) : MetaM (Option MVarId) :=
   mvarId.withContext do
     let target ← instantiateMVars (← mvarId.getType)
-    let targetNew ← Simp.main target (← Split.getSimpMatchContext) (methods := { pre })
+    let (targetNew, _) ← Simp.main target (← Split.getSimpMatchContext) (methods := { pre })
     let mvarIdNew ← applySimpResultToTarget mvarId target targetNew
     if mvarId != mvarIdNew then return some mvarIdNew else return none
 where
@@ -169,7 +169,7 @@ private partial def mkProof (declName : Name) (info : EqnInfo) (type : Expr) : M
         go mvarId
       else if let some mvarId ← whnfReducibleLHS? mvarId then
         go mvarId
-      else match (← simpTargetStar mvarId { config.dsimp := false }) with
+      else match (← simpTargetStar mvarId { config.dsimp := false }).1 with
         | TacticResultCNM.closed => return ()
         | TacticResultCNM.modified mvarId => go mvarId
         | TacticResultCNM.noChange =>
@@ -206,7 +206,7 @@ def mkEqns (declName : Name) (info : EqnInfo) : MetaM (Array Name) :=
     }
   return thmNames
 
-builtin_initialize eqnInfoExt : MapDeclarationExtension EqnInfo ← mkMapDeclarationExtension `wfEqInfo
+builtin_initialize eqnInfoExt : MapDeclarationExtension EqnInfo ← mkMapDeclarationExtension
 
 def registerEqnsInfo (preDefs : Array PreDefinition) (declNameNonRec : Name) (fixedPrefixSize : Nat) : CoreM Unit := do
   let declNames := preDefs.map (·.declName)

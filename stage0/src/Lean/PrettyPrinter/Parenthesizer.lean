@@ -3,9 +3,8 @@ Copyright (c) 2020 Sebastian Ullrich. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
-import Lean.CoreM
-import Lean.KeyedDeclsAttribute
 import Lean.Parser.Extension
+import Lean.Parser.StrInterpolation
 import Lean.ParserCompiler.Attribute
 import Lean.PrettyPrinter.Basic
 
@@ -483,6 +482,7 @@ def setExpected.parenthesizer (_expected : List String) (p : Parenthesizer) : Pa
 @[combinatorParenthesizer Lean.Parser.checkNoWsBefore] def checkNoWsBefore.parenthesizer : Parenthesizer := pure ()
 @[combinatorParenthesizer Lean.Parser.checkLinebreakBefore] def checkLinebreakBefore.parenthesizer : Parenthesizer := pure ()
 @[combinatorParenthesizer Lean.Parser.checkTailWs] def checkTailWs.parenthesizer : Parenthesizer := pure ()
+@[combinatorParenthesizer Lean.Parser.checkColEq] def checkColEq.parenthesizer : Parenthesizer := pure ()
 @[combinatorParenthesizer Lean.Parser.checkColGe] def checkColGe.parenthesizer : Parenthesizer := pure ()
 @[combinatorParenthesizer Lean.Parser.checkColGt] def checkColGt.parenthesizer : Parenthesizer := pure ()
 @[combinatorParenthesizer Lean.Parser.checkLineEq] def checkLineEq.parenthesizer : Parenthesizer := pure ()

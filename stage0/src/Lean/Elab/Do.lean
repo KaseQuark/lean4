@@ -187,15 +187,15 @@ structure Alt (σ : Type) where
 inductive Code where
   | decl         (xs : Array Var) (doElem : Syntax) (k : Code)
   | reassign     (xs : Array Var) (doElem : Syntax) (k : Code)
-  | /-- The Boolean value in `params` indicates whether we should use `(x : typeof! x)` when generating term Syntax or not -/
-    joinpoint    (name : Name) (params : Array (Var × Bool)) (body : Code) (k : Code)
+  /-- The Boolean value in `params` indicates whether we should use `(x : typeof! x)` when generating term Syntax or not -/
+  | joinpoint    (name : Name) (params : Array (Var × Bool)) (body : Code) (k : Code)
   | seq          (action : Syntax) (k : Code)
   | action       (action : Syntax)
   | break        (ref : Syntax)
   | continue     (ref : Syntax)
   | return       (ref : Syntax) (val : Syntax)
-  | /-- Recall that an if-then-else may declare a variable using `optIdent` for the branches `thenBranch` and `elseBranch`. We store the variable name at `var?`. -/
-    ite          (ref : Syntax) (h? : Option Var) (optIdent : Syntax) (cond : Syntax) (thenBranch : Code) (elseBranch : Code)
+  /-- Recall that an if-then-else may declare a variable using `optIdent` for the branches `thenBranch` and `elseBranch`. We store the variable name at `var?`. -/
+  | ite          (ref : Syntax) (h? : Option Var) (optIdent : Syntax) (cond : Syntax) (thenBranch : Code) (elseBranch : Code)
   | match        (ref : Syntax) (gen : Syntax) (discrs : Syntax) (optMotive : Syntax) (alts : Array (Alt Code))
   | jmp          (ref : Syntax) (jpName : Name) (args : Array Syntax)
   deriving Inhabited
@@ -213,7 +213,7 @@ def Code.getRef? : Code → Option Syntax
   | .match ref ..        => ref
   | .jmp ref ..          => ref
 
-abbrev VarSet := Std.RBMap Name Syntax Name.cmp
+abbrev VarSet := RBMap Name Syntax Name.cmp
 
 /-- A code block, and the collection of variables updated by it. -/
 structure CodeBlock where

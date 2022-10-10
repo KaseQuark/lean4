@@ -40,11 +40,10 @@ def StructureInfo.getProjFn? (info : StructureInfo) (i : Nat) : Option Name :=
 
 /-- Auxiliary state for structures defined in the current module. -/
 private structure StructureState where
-  map : Std.PersistentHashMap Name StructureInfo := {}
+  map : PersistentHashMap Name StructureInfo := {}
   deriving Inhabited
 
 builtin_initialize structureExt : SimplePersistentEnvExtension StructureInfo StructureState ← registerSimplePersistentEnvExtension {
-  name          := `structExt
   addImportedFn := fun _ => {}
   addEntryFn    := fun s e => { s with map := s.map.insert e.structName e }
   toArrayFn     := fun es => es.toArray.qsort StructureInfo.lt

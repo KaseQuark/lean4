@@ -69,8 +69,6 @@ private def logMessageIfAux {α : Type} [ToFormat α] (optName : Name) (a : α) 
 @[inline] def modifyEnv (f : Environment → Environment) : CompilerM Unit :=
   modify fun s => { s with env := f s.env }
 
-open Std (HashMap)
-
 abbrev DeclMap := SMap Name Decl
 
 /-- Create an array of decls to be saved on .olean file.
@@ -83,7 +81,6 @@ private def mkEntryArray (decls : List Decl) : Array Decl :=
 
 builtin_initialize declMapExt : SimplePersistentEnvExtension Decl DeclMap ←
   registerSimplePersistentEnvExtension {
-    name       := `IRDecls,
     addImportedFn := fun as =>
        let m : DeclMap := mkStateFromImportedEntries (fun s (d : Decl) => s.insert d.name d) {} as
        m.switch,

@@ -26,8 +26,8 @@ instance : ToFormat InstanceEntry where
 
 structure Instances where
   discrTree     : DiscrTree InstanceEntry := DiscrTree.empty
-  instanceNames : Std.PHashSet Name := {}
-  erased        : Std.PHashSet Name := {}
+  instanceNames : PHashSet Name := {}
+  erased        : PHashSet Name := {}
   deriving Inhabited
 
 def addInstanceEntry (d : Instances) (e : InstanceEntry) : Instances :=
@@ -45,7 +45,6 @@ def Instances.erase [Monad m] [MonadError m] (d : Instances) (declName : Name) :
 
 builtin_initialize instanceExtension : SimpleScopedEnvExtension InstanceEntry Instances ←
   registerSimpleScopedEnvExtension {
-    name     := `instanceExt
     initial  := {}
     addEntry := addInstanceEntry
   }
@@ -78,7 +77,7 @@ builtin_initialize
 def getGlobalInstancesIndex : CoreM (DiscrTree InstanceEntry) :=
   return Meta.instanceExtension.getState (← getEnv) |>.discrTree
 
-def getErasedInstances : CoreM (Std.PHashSet Name) :=
+def getErasedInstances : CoreM (PHashSet Name) :=
   return Meta.instanceExtension.getState (← getEnv) |>.erased
 
 def isInstance (declName : Name) : CoreM Bool :=
@@ -91,7 +90,7 @@ structure DefaultInstanceEntry where
   instanceName : Name
   priority     : Nat
 
-abbrev PrioritySet := Std.RBTree Nat (fun x y => compare y x)
+abbrev PrioritySet := RBTree Nat (fun x y => compare y x)
 
 structure DefaultInstances where
   defaultInstances : NameMap (List (Name × Nat)) := {}
@@ -106,7 +105,6 @@ def addDefaultInstanceEntry (d : DefaultInstances) (e : DefaultInstanceEntry) : 
 
 builtin_initialize defaultInstanceExtension : SimplePersistentEnvExtension DefaultInstanceEntry DefaultInstances ←
   registerSimplePersistentEnvExtension {
-    name          := `defaultInstanceExt
     addEntryFn    := addDefaultInstanceEntry
     addImportedFn := fun es => (mkStateFromImportedEntries addDefaultInstanceEntry {} es)
   }

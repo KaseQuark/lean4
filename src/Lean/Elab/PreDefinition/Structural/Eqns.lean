@@ -42,7 +42,7 @@ where
       go mvarId
     else if let some mvarId ← whnfReducibleLHS? mvarId then
       go mvarId
-    else match (← simpTargetStar mvarId {}) with
+    else match (← simpTargetStar mvarId {}).1 with
       | TacticResultCNM.closed => return ()
       | TacticResultCNM.modified mvarId => go mvarId
       | TacticResultCNM.noChange =>
@@ -77,7 +77,7 @@ def mkEqns (info : EqnInfo) : MetaM (Array Name) :=
     }
   return thmNames
 
-builtin_initialize eqnInfoExt : MapDeclarationExtension EqnInfo ← mkMapDeclarationExtension `structEqInfo
+builtin_initialize eqnInfoExt : MapDeclarationExtension EqnInfo ← mkMapDeclarationExtension
 
 def registerEqnsInfo (preDef : PreDefinition) (recArgPos : Nat) : CoreM Unit := do
   modifyEnv fun env => eqnInfoExt.insert env preDef.declName { preDef with recArgPos }

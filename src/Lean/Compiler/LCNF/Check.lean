@@ -29,15 +29,20 @@ abbrev CheckM := ReaderT Context $ StateRefT State InferTypeM
 
 def checkFVar (fvarId : FVarId) : CheckM Unit :=
   unless (← read).vars.contains fvarId do
-    let localDecl ← getLocalDecl fvarId
-    throwError "invalid out of scope free variable {localDecl.userName}"
+    throwError "invalid out of scope free variable {← getBinderName fvarId}"
+
+/-- Return true `f` is a constructor and `i` is less than its number of parameters. -/
+def isCtorParam (f : Expr) (i : Nat) : CoreM Bool := do
+  let .const declName _ := f | return false
+  let .ctorInfo info ← getConstInfo declName | return false
+  return i < info.numParams
 
 def checkAppArgs (f : Expr) (args : Array Expr) : CheckM Unit := do
   let mut fType ← inferType f
   let mut j := 0
   for i in [:args.size] do
     let arg := args[i]!
-    if fType.isAnyType then
+    if fType.isErased then
       return ()
     fType := fType.headBeta
     let (d, b) ←
@@ -48,16 +53,19 @@ def checkAppArgs (f : Expr) (args : Array Expr) : CheckM Unit := do
         match fType with
         | .forallE _ d b _ => j := i; pure (d, b)
         | _ =>
-          if fType.isAnyType then return ()
+          if fType.isErased then return ()
           throwError "function expected at{indentExpr (mkAppN f args)}\narrow type expected{indentExpr fType}"
     let argType ← inferType arg
     let expectedType := d.instantiateRevRange j i args
-    unless compatibleTypes argType expectedType do
+    unless (← InferType.compatibleTypes argType expectedType) do
       throwError "type mismatch at LCNF application{indentExpr (mkAppN f args)}\nargument {arg} has type{indentExpr argType}\nbut is expected to have type{indentExpr expectedType}"
-    unless isTypeFormerType expectedType || expectedType.erased do
-      unless arg.isFVar do
-        throwError "invalid LCNF application{indentExpr (mkAppN f args)}\nargument{indentExpr arg}\nmust be a free variable"
-      checkFVar arg.fvarId!
+    unless (← pure (maybeTypeFormerType expectedType) <||> isErasedCompatible expectedType) do
+      if arg.isFVar then
+        checkFVar arg.fvarId!
+      else
+        -- Constructor parameters that are not type formers are erased at phase .mono
+        unless arg.isErased && (← getPhase) ≥ .mono && (← isCtorParam f i) do
+          throwError "invalid LCNF application{indentExpr (mkAppN f args)}\nargument{indentExpr arg}\nhas type{indentExpr expectedType}\nmust be a free variable"
     fType := b
 
 def checkApp (f : Expr) (args : Array Expr) : CheckM Unit := do
@@ -89,14 +97,11 @@ def checkJpInScope (jp : FVarId) : CheckM Unit := do
       jp_1 _x.n -- jump to a join point that is not in the scope of `f`.
     ```
     -/
-    throwError "invalid jump to out of scope join point"
+    throwError "invalid jump to out of scope join point `{mkFVar jp}`"
 
 def checkParam (param : Param) : CheckM Unit := do
-  let localDecl ← getLocalDecl param.fvarId
-  unless localDecl.userName == param.binderName do
-    throwError "LCNF parameter mismatch at `{param.binderName}`, binder name in local context `{localDecl.userName}`"
-  unless localDecl.type == param.type do
-    throwError "LCNF parameter mismatch at `{param.binderName}`, type in local context{indentExpr localDecl.type}\nexpected{indentExpr param.type}"
+  unless param == (← getParam param.fvarId) do
+    throwError "LCNF parameter mismatch at `{param.binderName}`, does not value in local context"
 
 def checkParams (params : Array Param) : CheckM Unit :=
   params.forM checkParam
@@ -104,15 +109,10 @@ def checkParams (params : Array Param) : CheckM Unit :=
 def checkLetDecl (letDecl : LetDecl) : CheckM Unit := do
   checkExpr letDecl.value
   let valueType ← inferType letDecl.value
-  unless compatibleTypes letDecl.type valueType do
+  unless (← InferType.compatibleTypes letDecl.type valueType) do
     throwError "type mismatch at `{letDecl.binderName}`, value has type{indentExpr valueType}\nbut is expected to have type{indentExpr letDecl.type}"
-  let localDecl ← getLocalDecl letDecl.fvarId
-  unless localDecl.userName == letDecl.binderName do
-    throwError "LCNF let declaration mismatch at `{letDecl.binderName}`, binder name in local context `{localDecl.userName}`"
-  unless localDecl.type == letDecl.type do
-    throwError "LCNF let declaration mismatch at `{letDecl.binderName}`, type in local context{indentExpr localDecl.type}\nexpected{indentExpr letDecl.type}"
-  unless localDecl.value == letDecl.value do
-    throwError "LCNF let declaration mismatch at `{letDecl.binderName}`, value in local context{indentExpr localDecl.value}\nexpected{indentExpr letDecl.value}"
+  unless letDecl == (← getLetDecl letDecl.fvarId) do
+    throwError "LCNF let declaration mismatch at `{letDecl.binderName}`, does not match value in local context"
 
 def addFVarId (fvarId : FVarId) : CheckM Unit := do
   if (← get).all.contains fvarId then
@@ -138,16 +138,16 @@ partial def checkFunDeclCore (declName : Name) (type : Expr) (params : Array Par
   checkParams params
   let valueType ← withParams params do
     mkForallParams params (← check value)
-  unless compatibleTypes type valueType do
+  unless (← InferType.compatibleTypes type valueType) do
     throwError "type mismatch at `{declName}`, value has type{indentExpr valueType}\nbut is expected to have type{indentExpr type}"
 
 partial def checkFunDecl (funDecl : FunDecl) : CheckM Unit := do
   checkFunDeclCore funDecl.binderName funDecl.type funDecl.params funDecl.value
-  let localDecl ← getLocalDecl funDecl.fvarId
-  unless localDecl.userName == funDecl.binderName do
-    throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, binder name in local context `{localDecl.userName}`"
-  unless localDecl.type == funDecl.type do
-    throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, type in local context{indentExpr localDecl.type}\nexpected{indentExpr funDecl.type}"
+  let decl ← getFunDecl funDecl.fvarId
+  unless decl.binderName == funDecl.binderName do
+    throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, binder name in local context `{decl.binderName}`"
+  unless decl.type == funDecl.type do
+    throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, type in local context{indentExpr decl.type}\nexpected{indentExpr funDecl.type}"
   unless (← getFunDecl funDecl.fvarId) == funDecl do
     throwError "LCNF local function declaration mismatch at `{funDecl.binderName}`, declaration in local context does match"
 
@@ -155,8 +155,8 @@ partial def checkCases (c : Cases) : CheckM Expr := do
   let mut ctorNames : NameSet := {}
   let mut hasDefault := false
   checkFVar c.discr
-  let discrType ← inferFVarType c.discr
-  unless discrType.isAnyType do
+  let discrType ← LCNF.getType c.discr
+  unless discrType.isErased do
     let .const declName _ := discrType.headBeta.getAppFn | throwError "unexpected LCNF discriminant type {discrType}"
     unless c.typeName == declName do
       throwError "invalid LCNF `{c.typeName}.casesOn`, discriminant has type{indentExpr discrType}"
@@ -176,7 +176,7 @@ partial def checkCases (c : Cases) : CheckM Expr := do
           throwError "invalid LCNF `cases`, `{ctorName}` has # {val.numFields} fields, but alternative has # {params.size} alternatives"
         -- TODO: check whether the ctor field types as parameter types match.
         withParams params do check k
-    unless compatibleTypes type c.resultType do
+    unless (← InferType.compatibleTypes type c.resultType) do
       throwError "type mismatch at LCNF `cases` alternative\nhas type{indentExpr type}\nbut is expected to have type{indentExpr c.resultType}"
   return c.resultType
 
@@ -213,9 +213,13 @@ Check whether every local declaration in the local context is used in one of giv
 -/
 partial def checkDeadLocalDecls (decls : Array Decl) : CompilerM Unit := do
   let (_, s) := visitDecls decls |>.run {}
-  (← get).lctx.localDecls.forM fun fvarId decl =>
+  let usesFVar (binderName : Name) (fvarId : FVarId) :=
     unless s.contains fvarId do
-      throwError "LCNF local context contains unused local variable declaration `{decl.userName}`"
+      throwError "LCNF local context contains unused local variable declaration `{binderName}`"
+  let lctx := (← get).lctx
+  lctx.params.forM fun fvarId decl => usesFVar decl.binderName fvarId
+  lctx.letDecls.forM fun fvarId decl => usesFVar decl.binderName fvarId
+  lctx.funDecls.forM fun fvarId decl => usesFVar decl.binderName fvarId
 where
   visitFVar (fvarId : FVarId) : StateM FVarIdHashSet Unit :=
     modify (·.insert fvarId)

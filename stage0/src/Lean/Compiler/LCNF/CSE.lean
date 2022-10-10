@@ -5,6 +5,7 @@ Authors: Leonardo de Moura
 -/
 import Lean.Compiler.LCNF.CompilerM
 import Lean.Compiler.LCNF.ToExpr
+import Lean.Compiler.LCNF.PassManager
 
 namespace Lean.Compiler.LCNF
 
@@ -13,13 +14,16 @@ namespace Lean.Compiler.LCNF
 namespace CSE
 
 structure State where
-  map   : Std.PHashMap Expr FVarId := {}
+  map   : PHashMap Expr FVarId := {}
   subst : FVarSubst := {}
 
 abbrev M := StateRefT State CompilerM
 
-instance : MonadFVarSubst M where
+instance : MonadFVarSubst M false where
   getSubst := return (← get).subst
+
+instance : MonadFVarSubstState M where
+  modifySubst f := modify fun s => { s with subst := f s.subst }
 
 @[inline] def getSubst : M FVarSubst :=
   return (← get).subst
@@ -31,9 +35,13 @@ instance : MonadFVarSubst M where
   let map := (← get).map
   try x finally modify fun s => { s with map }
 
-def replaceFVar (fvarId fvarId' : FVarId) : M Unit := do
-  eraseFVar fvarId
-  modify fun s => { s with subst := s.subst.insert fvarId (.fvar fvarId') }
+def replaceLet (decl : LetDecl) (fvarId : FVarId) : M Unit := do
+  eraseLetDecl decl
+  addFVarSubst decl.fvarId fvarId
+
+def replaceFun (decl : FunDecl) (fvarId : FVarId) : M Unit := do
+  eraseFunDecl decl
+  addFVarSubst decl.fvarId fvarId
 
 partial def _root_.Lean.Compiler.LCNF.Code.cse (code : Code) : CompilerM Code :=
   go code |>.run' {}
@@ -48,23 +56,20 @@ where
     match code with
     | .let decl k =>
       let decl ← normLetDecl decl
-      if decl.pure then
-        -- We only apply CSE to pure code
-        match (← get).map.find? decl.value with
-        | some fvarId' =>
-          replaceFVar decl.fvarId fvarId'
-          go k
-        | none =>
-          addEntry decl.value decl.fvarId
-          return code.updateLet! decl (← go k)
-      else
+      -- We only apply CSE to pure code
+      match (← get).map.find? decl.value with
+      | some fvarId =>
+        replaceLet decl fvarId
+        go k
+      | none =>
+        addEntry decl.value decl.fvarId
         return code.updateLet! decl (← go k)
     | .fun decl k =>
       let decl ← goFunDecl decl
       let value := decl.toExpr
       match (← get).map.find? value with
       | some fvarId' =>
-        replaceFVar decl.fvarId fvarId'
+        replaceFun decl fvarId'
         go k
       | none =>
         addEntry value decl.fvarId
@@ -97,5 +102,11 @@ Common sub-expression elimination
 def Decl.cse (decl : Decl) : CompilerM Decl := do
   let value ← decl.value.cse
   return { decl with value }
+
+def cse : Pass :=
+  .mkPerDeclaration `cse Decl.cse .base
+
+builtin_initialize
+  registerTraceClass `Compiler.cse (inherited := true)
 
 end Lean.Compiler.LCNF

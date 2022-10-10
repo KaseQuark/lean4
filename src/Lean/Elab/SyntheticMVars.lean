@@ -3,8 +3,9 @@ Copyright (c) 2020 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Sebastian Ullrich
 -/
+import Lean.Meta.Tactic.Util
 import Lean.Util.ForEachExpr
-import Lean.Elab.Term
+import Lean.Util.OccursCheck
 import Lean.Elab.Tactic.Basic
 
 namespace Lean.Elab.Term
@@ -277,7 +278,7 @@ private def getSomeSynthethicMVarsRef : TermElabM Syntax := do
 private def throwStuckAtUniverseCnstr : TermElabM Unit := do
   -- This code assumes `entries` is not empty. Note that `processPostponed` uses `exceptionOnFailure` to guarantee this property
   let entries ← getPostponed
-  let mut found : Std.HashSet (Level × Level) := {}
+  let mut found : HashSet (Level × Level) := {}
   let mut uniqueEntries := #[]
   for entry in entries do
     let mut lhs := entry.lhs
@@ -325,7 +326,7 @@ mutual
   /--
   Try to synthesize a term `val` using the tactic code `tacticCode`, and then assign `mvarId := val`.
   -/
-  partial def runTactic (mvarId : MVarId) (tacticCode : Syntax) : TermElabM Unit := do
+  partial def runTactic (mvarId : MVarId) (tacticCode : Syntax) : TermElabM Unit := withoutAutoBoundImplicit do
     /- Recall, `tacticCode` is the whole `by ...` expression. -/
     let code := tacticCode[1]
     instantiateMVarDeclMVars mvarId

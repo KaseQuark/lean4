@@ -20,7 +20,7 @@ open Elab
 open Meta
 open FuzzyMatching
 
-builtin_initialize completionBlackListExt : TagDeclarationExtension ← mkTagDeclarationExtension `blackListCompletion
+builtin_initialize completionBlackListExt : TagDeclarationExtension ← mkTagDeclarationExtension
 
 @[export lean_completion_add_to_black_list]
 def addToBlackList (env : Environment) (declName : Name) : Environment :=
@@ -404,7 +404,7 @@ private def optionCompletion (ctx : ContextInfo) (stx : Syntax) (caps : ClientCa
         else
           (ss.toString, false)
     -- HACK(WN): unfold the type so ForIn works
-    let (decls : Std.RBMap _ _ _) ← getOptionDecls
+    let (decls : RBMap _ _ _) ← getOptionDecls
     let opts ← getOptions
     let mut items := #[]
     for ⟨name, decl⟩ in decls do

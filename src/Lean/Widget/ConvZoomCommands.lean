@@ -8,6 +8,7 @@ import Lean.Meta.ExprLens
 import Lean.Server.InfoUtils
 import Lean.Server.FileWorker.Utils
 import Lean.Data.Lsp.Utf16
+import Lean.Data.Lsp.Basic
 
 namespace Lean.Widget
 open Server
@@ -364,7 +365,9 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
 
   let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := stop } }, newText := val }
   let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
-  let edit : Lsp.WorkspaceEdit := { changes? := none, documentChanges? := [textDocumentEdit].toArray , changeAnnotations? := none }
+  let documentChange := (Lsp.DocumentChange.edit textDocumentEdit)
+  let edit : Lsp.WorkspaceEdit := { documentChanges := [documentChange].toArray }
+  --let edit := WorkspaceEdit.ofTextDocumentEdit textDocumentEdit
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
 
   return { newPath := { path? := inserted.newPath.toArray }, applyParams := applyParams }

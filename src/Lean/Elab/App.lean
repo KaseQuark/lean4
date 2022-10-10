@@ -1109,7 +1109,7 @@ private def addLValArg (baseName : Name) (fullName : Name) (e : Expr) (args : Ar
              and the current explicit position "fits" at `args` (i.e., it must be ≤ arg.size) -/
           if argIdx ≤ args.size && xDecl.binderInfo.isExplicit then
             /- We insert `e` as an explicit argument -/
-            return (args.insertAt argIdx (Arg.expr e), namedArgs)
+            return (args.insertAt! argIdx (Arg.expr e), namedArgs)
           /- If we can't add `e` to `args`, we try to add it using a named argument, but this is only possible
              if there isn't an argument with the same name occurring before it. -/
           for j in [:i] do
@@ -1272,7 +1272,7 @@ private partial def elabAppFn (f : Syntax) (lvals : List LVal) (namedArgs : Arra
         LVal.fieldName comp (toString comp.getId) none e
       elabAppFn e (newLVals ++ lvals) namedArgs args expectedType? explicit ellipsis overloaded acc
     let elabFieldIdx (e idxStx : Syntax) := do
-      let idx := idxStx.isFieldIdx?.get!
+      let some idx := idxStx.isFieldIdx? | throwError "invalid field index"
       elabAppFn e (LVal.fieldIdx idxStx idx :: lvals) namedArgs args expectedType? explicit ellipsis overloaded acc
     match f with
     | `($(e).$idx:fieldIdx) => elabFieldIdx e idx
@@ -1295,8 +1295,9 @@ private partial def elabAppFn (f : Syntax) (lvals : List LVal) (namedArgs : Arra
     | `(.$id:ident) =>
         addCompletionInfo <| CompletionInfo.dotId f id.getId (← getLCtx) expectedType?
         let fConst ← mkConst (← resolveDotName id expectedType?)
-        let fConst ← addTermInfo f fConst
         let s ← observing do
+          -- Use (force := true) because we want to record the result of .ident resolution even in patterns
+          let fConst ← addTermInfo f fConst expectedType? (force := true)
           let e ← elabAppLVals fConst lvals namedArgs args expectedType? explicit ellipsis
           if overloaded then ensureHasType expectedType? e else return e
         return acc.push s

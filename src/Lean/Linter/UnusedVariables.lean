@@ -1,9 +1,5 @@
-import Lean.Elab.Command
 import Lean.Linter.Util
-import Lean.Elab.InfoTree
-import Lean.Server.InfoUtils
 import Lean.Server.References
-import Lean.Data.HashMap
 
 namespace Lean.Linter
 open Lean.Elab.Command Lean.Server Std
@@ -106,10 +102,8 @@ builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack opts =>
     (stx.isOfKind ``Lean.Parser.Term.matchAlt && pos == 1) ||
     (stx.isOfKind ``Lean.Parser.Tactic.inductionAltLHS && pos == 2))
 
-
 builtin_initialize unusedVariablesIgnoreFnsExt : SimplePersistentEnvExtension Name Unit ←
   registerSimplePersistentEnvExtension {
-    name          := `unusedVariablesIgnoreFns
     addEntryFn    := fun _ _ => ()
     addImportedFn := fun _ => ()
   }
@@ -190,7 +184,7 @@ def unusedVariables : Linter := fun cmdStx => do
 
   -- collect ignore functions
   let ignoreFns := (← getUnusedVariablesIgnoreFns)
-    |>.insertAt 0 (isTopLevelDecl constDecls)
+    |>.insertAt! 0 (isTopLevelDecl constDecls)
 
   -- determine unused variables
   for (id, ⟨decl?, uses⟩) in vars.toList do

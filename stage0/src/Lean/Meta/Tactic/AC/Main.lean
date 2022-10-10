@@ -3,10 +3,9 @@ Copyright (c) 2022 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Dany Fabian
 -/
-import Init.Data.AC
 import Lean.Meta.AppBuilder
 import Lean.Meta.Tactic.Refl
-import Lean.Elab.Tactic.Basic
+import Lean.Meta.Tactic.Simp.Main
 import Lean.Elab.Tactic.Rewrite
 
 namespace Lean.Meta.AC
@@ -64,9 +63,9 @@ inductive PreExpr
 def toACExpr (op l r : Expr) : MetaM (Array Expr × ACExpr) := do
   let (preExpr, vars) ←
     toPreExpr (mkApp2 op l r)
-    |>.run Std.HashSet.empty
+    |>.run HashSet.empty
   let vars := vars.toArray.insertionSort Expr.lt
-  let varMap := vars.foldl (fun xs x => xs.insert x xs.size) Std.HashMap.empty |>.find!
+  let varMap := vars.foldl (fun xs x => xs.insert x xs.size) HashMap.empty |>.find!
 
   return (vars, toACExpr varMap preExpr)
   where
@@ -146,7 +145,7 @@ def rewriteUnnormalized (mvarId : MVarId) : MetaM Unit := do
       config        := Simp.neutralConfig
     }
   let tgt ← instantiateMVars (← mvarId.getType)
-  let res ← Simp.main tgt simpCtx (methods := { post })
+  let (res, _) ← Simp.main tgt simpCtx (methods := { post })
   let newGoal ← applySimpResultToTarget mvarId tgt res
   newGoal.refl
 where
