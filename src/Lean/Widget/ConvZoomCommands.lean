@@ -263,14 +263,14 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   else
     argNr := argNr - 2
     let mut prevArg := reprint! t.cur.getArgs[argNr]!
-    let mut splitted := (prevArg.splitOn "\n")
+    let mut split := (prevArg.splitOn "\n")
     -- if there is no `\n`, we take the whitespace from the following node instead
-    while splitted.length == 1 do
+    while split.length == 1 do
       argNr := argNr + 2
       prevArg := reprint! t.cur.getArgs[argNr]!
-      splitted := (prevArg.splitOn "\n")
+      split := (prevArg.splitOn "\n")
 
-    let mut indentationLine := splitted.reverse.head!
+    let mut indentationLine := split.reverse.head!
     indentation := extractIndentation indentationLine
 
   -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
