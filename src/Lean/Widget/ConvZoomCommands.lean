@@ -131,20 +131,13 @@ private def locate (stx : Syntax) (pos : String.Pos) : LocateReturn := Id.run do
 
   -- go back up from found location to the first `conv` we find
   let mut pathAfterConv := []
-  let mut firstArg := reprint! t.cur
-  while !("conv".isPrefixOf firstArg) do
+  while !((toString t.cur.getKind) == "Lean.Parser.Tactic.Conv.conv" || (toString t.cur.getKind) == "Lean.Parser.Tactic.Conv.convConvSeq") do
     t := t.up
-    firstArg :=reprint! t.cur.getArgs[0]!
     pathAfterConv := path.head!::pathAfterConv
     path := path.tail!
 
-  --the cursor is at the `conv` atom, we need to do some extra work
-  if reprint! t.cur == "conv " then
-    path := path.tail!
-    pathAfterConv := [t.up.cur.getArgs.size - 2]
-
-  -- the cursor is in front of the first tactic, we need to do some extra work
-  else if pathAfterConv == [] then
+  -- the cursor is in front of the first tactic or at the conv atom, we need to do some extra work
+  if pathAfterConv == [] || pathAfterConv.length == 1 then
     pathAfterConv := [t.cur.getArgs.size - 2]
 
   -- the cursor is in front of another tactic, we need to do some extra work
@@ -165,6 +158,7 @@ private partial def extractIndentation (input : String) : String := match "  ".i
 private structure InsertReturn where
   stx : Syntax
   newPath : List Nat
+  test : String
 
 private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
   let mut t := Syntax.Traverser.fromSyntax stx
@@ -222,9 +216,10 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
 
   let newPath := pathBeforeConvParam ++ (pathAfterConv.head! + 1)::0::0::[0]
 
-  return { stx := t.cur, newPath := newPath }
+  return { stx := t.cur, newPath := newPath , test := ""}
 
 private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
+  let mut test := ""
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -244,7 +239,8 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   let argAsString := reprint! t.cur.getArgs[pathAfterConv.head!]!
   let mut newval := value
   let mut entersMerged := false
-  if "enter".isPrefixOf argAsString then
+  test := toString t.cur.getArgs[pathAfterConv.head!]!.getKind
+  if toString t.cur.getArgs[pathAfterConv.head!]!.getKind == "Lean.Parser.Tactic.Conv.«convEnter[__]»" then
     let mut additionalArgs := (argAsString.splitOn "\n").head!
     additionalArgs := (additionalArgs.drop "enter [".length).dropRight 1
 
@@ -313,11 +309,11 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   while t.parents.size > 0 do
     t := t.up
 
-  return { stx := t.cur, newPath := newPath }
+  return { stx := t.cur, newPath := newPath, test := test }
 
 
 private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
-  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam }
+  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam , test := ""}
   -- we are right after conv, we need to do something different here
   if pathAfterConvParam.length == 1 then
     return insertAfterArrow stx pathBeforeConvParam pathAfterConvParam value
@@ -354,16 +350,18 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
   -- insert `enter [...]` string into syntax
   let located := (locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) })
   let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval
-  let val := reprint! inserted.stx
+  let mut val := reprint! inserted.stx
+
+  --drop newlines and whitespace at the end
+  let mut syntaxAsList := val.data.reverse
+  while syntaxAsList.head! == '\n' || syntaxAsList.head! == ' ' do
+    val := val.dropRight 1
+    syntaxAsList := syntaxAsList.tail!
 
   -- insert new syntax into document
   let text := doc.meta.text
 
-  let mut stop := range.stop.byteIdx + 2
-  if p.byteIdx == range.stop.byteIdx then stop := p.byteIdx + 1
-  if text.source.length == range.stop.byteIdx then stop := text.source.length
-
-  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := stop } }, newText := val }
+  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := range.stop.byteIdx } }, newText := val }
   let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
   let edit := Lsp.WorkspaceEdit.ofTextDocumentEdit textDocumentEdit
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
