@@ -154,7 +154,7 @@ private def locate (stx : Syntax) (pos : String.Pos) : LocateReturn := Id.run do
     while rangeList'.head!.stop < pos do
       ctr := ctr + 1
       rangeList' := rangeList'.tail!
-    pathAfterConv := List.append pathAfterConv ((ctr-1)::0::[0])
+    pathAfterConv := List.append pathAfterConv ((ctr-2)::[0])
 
   return {pathBeforeConv := path.reverse, pathAfterConv := pathAfterConv }
 
@@ -233,7 +233,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   let mut pathAfterConv := pathAfterConvParam
 
 --check if other tactics follow after the `conv` block
-  let nothingAfterConv := t.up.up.cur.getArgs.size - 1 == pathBeforeConvParam.reverse.tail!.head!
+  let nothingAfterConv := t.up.cur.getArgs.size - 1 == pathBeforeConvParam.reverse.head!
 
   -- move down to args of `conv`
   for _ in [:3] do
@@ -243,7 +243,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   -- check if it's an enter and if yes merge them
   let argAsString := reprint! t.cur.getArgs[pathAfterConv.head!]!
   let mut newval := value
-  let mut convsMerged := false
+  let mut entersMerged := false
   if "enter".isPrefixOf argAsString then
     let mut additionalArgs := (argAsString.splitOn "\n").head!
     additionalArgs := (additionalArgs.drop "enter [".length).dropRight 1
@@ -251,7 +251,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
     let left := value.take "enter [".length
     let right := value.drop "enter [".length
     newval := left ++ additionalArgs ++ ", " ++ right
-    convsMerged := true
+    entersMerged := true
 
   --get whitespace from previous tactic and make new node
   let mut argNr := pathAfterConv.head!
@@ -261,20 +261,20 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
     let mut indentationLine := ((reprint! t.up.up.up.cur).splitOn "\n").tail!.head!
     indentation := extractIndentation indentationLine
   else
-    argNr := argNr - 1
+    argNr := argNr - 2
     let mut prevArg := reprint! t.cur.getArgs[argNr]!
     let mut splitted := (prevArg.splitOn "\n")
     -- if there is no `\n`, we take the whitespace from the following node instead
     while splitted.length == 1 do
-      argNr := argNr + 1
+      argNr := argNr + 2
       prevArg := reprint! t.cur.getArgs[argNr]!
       splitted := (prevArg.splitOn "\n")
 
     let mut indentationLine := splitted.reverse.head!
     indentation := extractIndentation indentationLine
 
-    -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
-    -- and remove some at the end.
+  -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
+  -- and remove some at the end.
   let mut frontIndentation := ""
   if pathAfterConv.head! == t.cur.getArgs.size - 1 then
     let lastArg := reprint! t.cur.getArgs[ t.cur.getArgs.size - 1]!
@@ -288,7 +288,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
 
     -- add new node to syntax and move to the very top
   let mut argList := []
-    --if there are no tactics after the conv block, we need to remove all but one `\n` from the last tactic
+  --if there are no tactics after the conv block, we need to remove all but one `\n` from the last tactic
   if nothingAfterConv then
     let mut adjustedLastLine := reprint! t.cur.getArgs[t.cur.getArgs.size - 1]!
     while adjustedLastLine.takeRight 1 == "\n" do
@@ -299,15 +299,15 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   else
     argList := t.cur.getArgs.toList
 
-  let newNode := match convsMerged with
+  let newNode := match entersMerged with
     | true => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (newval ++ "\n" ++ indentation)
     | false => Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (frontIndentation ++ newval ++ "\n" ++ indentation)
-  let newArgList := match convsMerged with
+  let newArgList := match entersMerged with
     | true => List.append (argList.take (pathAfterConv.head!) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
     | false => List.append (argList.take (pathAfterConv.head! + 1) ) (newNode::(argList.drop (pathAfterConv.head! + 1)))
-  let newPath := match convsMerged with
+  let newPath := match entersMerged with
     | true => pathBeforeConvParam ++ (pathAfterConvParam.take 4)
-    | false => pathBeforeConvParam ++ (pathAfterConvParam.take 3) ++ [(pathAfterConvParam.get! 3) + 1]
+    | false => pathBeforeConvParam ++ (pathAfterConvParam.take 3) ++ [(pathAfterConvParam.get! 3) + 2]
 
   t := t.setCur (t.cur.setArgs newArgList.toArray)
   while t.parents.size > 0 do
@@ -365,9 +365,7 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
 
   let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := stop } }, newText := val }
   let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
-  let documentChange := (Lsp.DocumentChange.edit textDocumentEdit)
-  let edit : Lsp.WorkspaceEdit := { documentChanges := [documentChange].toArray }
-  --let edit := WorkspaceEdit.ofTextDocumentEdit textDocumentEdit
+  let edit := Lsp.WorkspaceEdit.ofTextDocumentEdit textDocumentEdit
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
 
   return { newPath := { path? := inserted.newPath.toArray }, applyParams := applyParams }
