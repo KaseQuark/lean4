@@ -179,8 +179,7 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
   --get previous whitespace
   let argNr := pathBeforeConv'.head! - 1
   let prevArg := reprint! t.cur.getArgs[argNr]!
-  let mut previousIndentationLine := (prevArg.splitOn "\n").reverse.head!
-  let mut previousIndentation :=  extractIndentation previousIndentationLine
+  let mut previousIndentation :=  extractIndentation (prevArg.splitOn "\n").reverse.head!
 
   -- move back down to `conv`
   t := t.down pathBeforeConv'.head!
@@ -190,8 +189,7 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
 
   -- we also need the whitespace fron the `=>` node
   let arrow := reprint! t.cur.getArgs[pathAfterConv.head!]!
-  let mut arrowIndentationLine := (arrow.splitOn "\n").reverse.head!
-  let mut arrowIndentation := extractIndentation arrowIndentationLine
+  let mut arrowIndentation := extractIndentation (arrow.splitOn "\n").reverse.head!
 
   let mut newNode := Syntax.missing
   --if there is an empty conv body, we need to remove the newlines from the `=>`
@@ -251,8 +249,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   let mut indentation := ""
   if argNr == 0 then
     -- in this case, we need to grab the whitespace from `=>`
-    let mut indentationLine := ((reprint! t.up.up.up.cur).splitOn "\n").tail!.head!
-    indentation := extractIndentation indentationLine
+    indentation := extractIndentation ((reprint! t.up.up.up.cur).splitOn "\n").tail!.head!
   else
     argNr := argNr - 2
     let mut prevArg := reprint! t.cur.getArgs[argNr]!
@@ -271,9 +268,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   let mut frontIndentation := ""
   if pathAfterConv.head! == t.cur.getArgs.size - 1 then
     let lastArg := reprint! t.cur.getArgs[ t.cur.getArgs.size - 1]!
-    let mut lastArgIndentationLine := (lastArg.splitOn "\n").reverse.head!
-    let mut lastArgIndentation := extractIndentation lastArgIndentationLine
-
+    let mut lastArgIndentation := extractIndentation (lastArg.splitOn "\n").reverse.head!
     let numOfWhitespace := indentation.length - lastArgIndentation.length
     for _ in [:numOfWhitespace] do
       frontIndentation := frontIndentation ++ " "
@@ -311,7 +306,6 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
 
 private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
   if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam }
-  -- we are right after conv, we need to do something different here
   if pathAfterConvParam.length == 1 then
     return insertAfterArrow stx pathBeforeConvParam pathAfterConvParam value
   else
@@ -347,18 +341,18 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
   -- insert `enter [...]` string into syntax
   let located := (locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) })
   let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval
-  let mut val := reprint! inserted.stx
+  let mut newSyntax := reprint! inserted.stx
 
   --drop newlines and whitespace at the end
-  let mut syntaxAsList := val.data.reverse
+  let mut syntaxAsList := newSyntax.data.reverse
   while syntaxAsList.head! == '\n' || syntaxAsList.head! == ' ' do
-    val := val.dropRight 1
+    newSyntax := newSyntax.dropRight 1
     syntaxAsList := syntaxAsList.tail!
 
   -- insert new syntax into document
   let text := doc.meta.text
 
-  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := range.stop.byteIdx } }, newText := val }
+  let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := range.stop.byteIdx } }, newText := newSyntax }
   let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
   let edit := Lsp.WorkspaceEdit.ofTextDocumentEdit textDocumentEdit
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
@@ -371,9 +365,8 @@ def findPos (newPathParam : List Nat) (stx : Syntax) : String.Pos := Id.run do
   while !newPath.isEmpty do
     t := t.down newPath.head!
     newPath := newPath.tail!
-  let ret := match t.cur.getRange? with
+  return match t.cur.getRange? with
     | some x => x.stop
     | none => panic! "couldn't get position"
-  return ret
 
 end Lean.Widget
