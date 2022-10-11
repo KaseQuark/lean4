@@ -90,7 +90,7 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
       | _ => return { expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
 
   | _ => do
-    return { expr := ←(Lean.Core.viewSubexpr listParam.head! expr), val? := toString ((listParam.head!) + 1), listRest := listParam.tail! }
+    return { expr := ←(Lean.Core.viewSubexpr listParam.head! expr), val? := toString (listParam.head! + 1), listRest := listParam.tail! }
 
 
 def reprint! (stx : Syntax) : String :=
@@ -131,7 +131,7 @@ private def locate (stx : Syntax) (pos : String.Pos) : LocateReturn := Id.run do
 
   -- go back up from found location to the first `conv` we find
   let mut pathAfterConv := []
-  while !((toString t.cur.getKind) == "Lean.Parser.Tactic.Conv.conv" || (toString t.cur.getKind) == "Lean.Parser.Tactic.Conv.convConvSeq") do
+  while !(toString t.cur.getKind == "Lean.Parser.Tactic.Conv.conv" || toString t.cur.getKind == "Lean.Parser.Tactic.Conv.convConvSeq") do
     t := t.up
     pathAfterConv := path.head!::pathAfterConv
     path := path.tail!
@@ -231,7 +231,7 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
     t := t.down pathAfterConv.head!
     pathAfterConv := pathAfterConv.tail!
 
-  -- check if it's an enter and if yes merge them
+  -- check if it's an enter and if yes, merge them
   let argAsString := reprint! t.cur.getArgs[pathAfterConv.head!]!
   let mut newval := value
   let mut entersMerged := false
@@ -253,12 +253,12 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   else
     argNr := argNr - 2
     let mut prevArg := reprint! t.cur.getArgs[argNr]!
-    let mut split := (prevArg.splitOn "\n")
+    let mut split := prevArg.splitOn "\n"
     -- if there is no `\n`, we take the whitespace from the following node instead
     while split.length == 1 do
       argNr := argNr + 2
       prevArg := reprint! t.cur.getArgs[argNr]!
-      split := (prevArg.splitOn "\n")
+      split := prevArg.splitOn "\n"
 
     let mut indentationLine := split.reverse.head!
     indentation := extractIndentation indentationLine
@@ -317,7 +317,7 @@ structure InsertEnterReturn where
 
 def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p : String.Pos) (doc : Lean.Server.FileWorker.EditableDocument): MetaM InsertEnterReturn := do
   let mut list := (SubExpr.Pos.toArray subexprParam.subexprPos).toList
-  let mut expr := (getExprFromCodeWithInfos goalParam.type)
+  let mut expr := getExprFromCodeWithInfos goalParam.type
   let mut retList := []
   -- generate list of commands for `enter`
   while !list.isEmpty do
@@ -339,7 +339,7 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
         | none => panic! "could not get range"
 
   -- insert `enter [...]` string into syntax
-  let located := (locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) })
+  let located := locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) }
   let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval
   let mut newSyntax := reprint! inserted.stx
 
