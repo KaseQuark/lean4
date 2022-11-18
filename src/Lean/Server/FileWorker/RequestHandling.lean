@@ -229,7 +229,7 @@ def handlePlainTermGoal (p : PlainTermGoalParams)
     }
 
 def insertEnter (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
-    : RequestM (RequestTask (Option Widget.NewEnterPath)) := do
+    : RequestM (RequestTask (Option Widget.NewCursorPos)) := do
   let t ← getInteractiveGoals p
   let ctx ← read
   let goals := match t.get with
@@ -248,19 +248,8 @@ def insertEnter (expr: Widget.SubexprInfo) (p: Lsp.PlainGoalParams)
         let hOut := ctx.hOut
         let applyRequest : JsonRpc.Request ApplyWorkspaceEditParams := { id := "applyEdit", method := "workspace/applyEdit", param := ret.applyParams }
         hOut.writeLspMessage applyRequest
-        IO.sleep 1000
-        return some ret.newPath
-      return some { path? := none }
-
-def moveCursorAfterZoom (path: Array Nat) (p: Lsp.PlainGoalParams)
-    : RequestM (RequestTask (Option Widget.MoveCursorAfterZoomPosition)) := do
-  let doc ← readDoc
-  let text := doc.meta.text
-  let hoverPos := text.lspPosToUtf8Pos p.position
-  withWaitFindSnap doc (fun s => s.endPos >= hoverPos)
-    (notFoundX := pure none) fun snap => do
-      let pos := Widget.findPos path.toList snap.stx
-      return some { position? := text.utf8PosToLspPos pos , uri? := doc.meta.uri}
+        return some ret.cursorPos
+      return some { newCursorPos? := none, uri? := none }
 
 partial def handleDocumentHighlight (p : DocumentHighlightParams)
     : RequestM (RequestTask (Array DocumentHighlight)) := do

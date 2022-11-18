@@ -13,15 +13,10 @@ import Lean.Data.Lsp.Basic
 namespace Lean.Widget
 open Server
 
-structure NewEnterPath where
-  path? : Option (Array Nat)
-  deriving ToJson, FromJson
-
-structure MoveCursorAfterZoomPosition where
-  position? : Option Lsp.Position
+structure NewCursorPos where
+  newCursorPos? : Option Lsp.Position
   uri? : Option String
   deriving ToJson, FromJson
-
 
 /-- Get the top level expression from a `CodeWithInfos`. -/
 private def getExprFromCodeWithInfos : CodeWithInfos → Expr
@@ -36,7 +31,7 @@ private structure SolveReturn where
   val? : Option String
   listRest : List Nat
 
-private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn := match expr with
+private def solveLevel (expr : Expr) (path : List Nat) : MetaM SolveReturn := match expr with
   | Expr.app _ _ => do
     let mut descExp := expr
     let mut count := 0
@@ -53,14 +48,14 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
       descExp := descExp.appFn!
 
     -- we get the correct `enter` command by subtracting the number of `true`s in our list
-    let mut list := listParam
+    let mut mutablePath := path
     let mut length := count
     explicitList := List.reverse explicitList
-    while !list.isEmpty && list.head! == 0 do
+    while !mutablePath.isEmpty && mutablePath.head! == 0 do
       if explicitList.head! == true then
         count := count - 1
       explicitList := explicitList.tail!
-      list := list.tail!
+      mutablePath := mutablePath.tail!
 
     let mut nextExp := expr
     while length > count do
@@ -68,29 +63,29 @@ private def solveLevel (expr : Expr) (listParam : List Nat) : MetaM SolveReturn 
       length := length - 1
     nextExp := nextExp.appArg!
 
-    let listRest := if list.isEmpty then [] else list.tail!
+    let pathRest := if mutablePath.isEmpty then [] else mutablePath.tail!
 
-    return { expr := nextExp, val? := toString count , listRest := listRest }
+    return { expr := nextExp, val? := toString count , listRest := pathRest }
 
   | Expr.lam n _ b _ => do
     let name := match n with
       | Name.str _ s => s
       | _ => panic! "no name found"
-    return { expr := b, val? := name, listRest := listParam.tail! }
+    return { expr := b, val? := name, listRest := path.tail! }
 
   | Expr.forallE n _ b _ => do
     let name := match n with
       | Name.str _ s => s
       | _ => panic! "no name found"
-    return { expr := b, val? := name, listRest := listParam.tail! }
+    return { expr := b, val? := name, listRest := path.tail! }
 
   | Expr.mdata _ b => do
     match b with
-      | Expr.mdata _ _ => return { expr := b, val? := none, listRest := listParam }
-      | _ => return { expr := b.appFn!.appArg!, val? := none, listRest := listParam.tail!.tail! }
+      | Expr.mdata _ _ => return { expr := b, val? := none, listRest := path }
+      | _ => return { expr := b.appFn!.appArg!, val? := none, listRest := path.tail!.tail! }
 
   | _ => do
-    return { expr := ←(Lean.Core.viewSubexpr listParam.head! expr), val? := toString (listParam.head! + 1), listRest := listParam.tail! }
+    return { expr := ←(Lean.Core.viewSubexpr path.head! expr), val? := toString (path.head! + 1), listRest := path.tail! }
 
 
 def reprint! (stx : Syntax) : String :=
@@ -158,8 +153,9 @@ private partial def extractIndentation (input : String) : String := match "  ".i
 private structure InsertReturn where
   stx : Syntax
   newPath : List Nat
+  newCursorPos : Lsp.Position
 
-private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
+private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) (text : FileMap) : InsertReturn := Id.run do
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -190,6 +186,9 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
   -- we also need the whitespace fron the `=>` node
   let arrow := reprint! t.cur.getArgs[pathAfterConv.head!]!
   let mut arrowIndentation := extractIndentation (arrow.splitOn "\n").reverse.head!
+  let mut newCursorPos := match t.cur.getArgs[pathAfterConv.head!]!.getRange? with
+    | some range => text.utf8PosToLspPos range.stop
+    | none => text.utf8PosToLspPos 0
 
   let mut newNode := Syntax.missing
   --if there is an empty conv body, we need to remove the newlines from the `=>`
@@ -197,8 +196,10 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
     let newArrow := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) "=>\n"
     t := t.setCur (t.cur.setArgs (List.append (t.cur.getArgs.toList.take pathAfterConv.head!) (newArrow::t.cur.getArgs.toList.drop (pathAfterConv.head! + 1))).toArray)
     newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) ("  " ++ previousIndentation ++ value ++ "\n" ++ arrowIndentation)
+    newCursorPos := { line := newCursorPos.line + 1, character := 2 + previousIndentation.length + value.length }
   else
     newNode := Syntax.atom (SourceInfo.original "".toSubstring 0 "".toSubstring 0) (value ++ "\n" ++ arrowIndentation)
+    newCursorPos := { line := newCursorPos.line + 1, character := arrowIndentation.length + value.length }
 
   -- move down to args of `conv`
   t := t.down (pathAfterConv.head! + 1)
@@ -213,9 +214,9 @@ private def insertAfterArrow (stx : Syntax) (pathBeforeConvParam : List Nat) (pa
 
   let newPath := pathBeforeConvParam ++ (pathAfterConv.head! + 1)::0::0::[0]
 
-  return { stx := t.cur, newPath := newPath }
+  return { stx := t.cur, newPath := newPath, newCursorPos }
 
-private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
+private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) (text : FileMap): InsertReturn := Id.run do
   let mut t := Syntax.Traverser.fromSyntax stx
   let mut pathBeforeConv := pathBeforeConvParam
   while pathBeforeConv.length > 0 do
@@ -244,6 +245,11 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
     newval := left ++ additionalArgs ++ ", " ++ right
     entersMerged := true
 
+  --get end position of previous node
+  let mut newCursorPos := match t.cur.getArgs[pathAfterConv.head!]!.getRange? with
+    | some range => text.utf8PosToLspPos range.stop
+    | none => text.utf8PosToLspPos 0
+
   --get whitespace from previous tactic and make new node
   let mut argNr := pathAfterConv.head!
   let mut indentation := ""
@@ -262,6 +268,10 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
 
     let mut indentationLine := split.reverse.head!
     indentation := extractIndentation indentationLine
+
+  newCursorPos := match entersMerged with
+    | true => { line := newCursorPos.line, character := indentation.length + newval.length }
+    | false => { line := newCursorPos.line + 1, character := indentation.length + newval.length }
 
   -- if we are inserting after the last element of the conv block, we need to add additional indentation in front of our tactic,
   -- and remove some at the end.
@@ -301,18 +311,18 @@ private def insertAnywhereElse (stx : Syntax) (pathBeforeConvParam : List Nat) (
   while t.parents.size > 0 do
     t := t.up
 
-  return { stx := t.cur, newPath := newPath }
+  return { stx := t.cur, newPath := newPath, newCursorPos := newCursorPos }
 
 
-private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) : InsertReturn := Id.run do
-  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam }
+private def syntaxInsert (stx : Syntax) (pathBeforeConvParam : List Nat) (pathAfterConvParam : List Nat) (value : String) (text : FileMap): InsertReturn := Id.run do
+  if value == "" then return { stx := stx, newPath := pathBeforeConvParam ++ pathAfterConvParam, newCursorPos := {line := 0, character := 0} }
   if pathAfterConvParam.length == 1 then
-    return insertAfterArrow stx pathBeforeConvParam pathAfterConvParam value
+    return insertAfterArrow stx pathBeforeConvParam pathAfterConvParam value text
   else
-    return insertAnywhereElse stx pathBeforeConvParam pathAfterConvParam value
+    return insertAnywhereElse stx pathBeforeConvParam pathAfterConvParam value text
 
 structure InsertEnterReturn where
-  newPath : NewEnterPath
+  cursorPos : NewCursorPos
   applyParams : Lsp.ApplyWorkspaceEditParams
 
 def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx : Syntax) (p : String.Pos) (doc : Lean.Server.FileWorker.EditableDocument): MetaM InsertEnterReturn := do
@@ -339,8 +349,10 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
         | none => panic! "could not get range"
 
   -- insert `enter [...]` string into syntax
+  let text := doc.meta.text
+
   let located := locate stx { byteIdx := (min p.byteIdx range.stop.byteIdx) }
-  let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval
+  let inserted := syntaxInsert stx located.pathBeforeConv located.pathAfterConv enterval text
   let mut newSyntax := reprint! inserted.stx
 
   --drop newlines and whitespace at the end
@@ -350,23 +362,11 @@ def insertEnter (subexprParam : SubexprInfo) (goalParam : InteractiveGoal) (stx 
     syntaxAsList := syntaxAsList.tail!
 
   -- insert new syntax into document
-  let text := doc.meta.text
-
   let textEdit : Lsp.TextEdit := { range := { start := text.utf8PosToLspPos range.start, «end» := text.utf8PosToLspPos { byteIdx := range.stop.byteIdx } }, newText := newSyntax }
   let textDocumentEdit : Lsp.TextDocumentEdit := { textDocument := { uri := doc.meta.uri, version? := doc.meta.version }, edits := [textEdit].toArray }
   let edit := Lsp.WorkspaceEdit.ofTextDocumentEdit textDocumentEdit
   let applyParams : Lsp.ApplyWorkspaceEditParams := { label? := "insert `enter` tactic", edit := edit }
 
-  return { newPath := { path? := inserted.newPath.toArray }, applyParams := applyParams }
-
-def findPos (newPathParam : List Nat) (stx : Syntax) : String.Pos := Id.run do
-  let mut t := Syntax.Traverser.fromSyntax stx
-  let mut newPath := newPathParam
-  while !newPath.isEmpty do
-    t := t.down newPath.head!
-    newPath := newPath.tail!
-  return match t.cur.getRange? with
-    | some x => x.stop
-    | none => panic! "couldn't get position"
+  return { cursorPos := { newCursorPos? := inserted.newCursorPos , uri? := doc.meta.uri}, applyParams := applyParams }
 
 end Lean.Widget

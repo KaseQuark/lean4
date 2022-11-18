@@ -38,20 +38,8 @@ builtin_initialize
   registerBuiltinRpcProcedure
     `Lean.Widget.insertEnter
     ConvZoomParams
-   (Option NewEnterPath)
+   (Option NewCursorPos)
     fun ⟨expr, posParams⟩ => (FileWorker.insertEnter expr posParams)
-
-structure MoveCursorAfterZoomParams where
-  path : Array Nat
-  positionParams : Lsp.PlainGoalParams
-  deriving RpcEncodable
-
-builtin_initialize
-  registerBuiltinRpcProcedure
-    `Lean.Widget.moveCursorAfterZoom
-    MoveCursorAfterZoomParams
-   (Option MoveCursorAfterZoomPosition)
-    fun ⟨path, posParams⟩ => (FileWorker.moveCursorAfterZoom path posParams)
 
 /-- The information that the infoview uses to render a popup
 for when the user hovers over an expression.
